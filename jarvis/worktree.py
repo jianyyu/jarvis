@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 from pathlib import Path
@@ -7,7 +8,36 @@ from pathlib import Path
 VALID_SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
 
 
-def create_worktree(slug: str, base_dir: str, repo_path: str) -> str:
+@functools.lru_cache(maxsize=1)
+def has_git_stack() -> bool:
+    """Check if git-stack is installed and available."""
+    try:
+        subprocess.run(
+            ["git", "stack", "version"],
+            capture_output=True, check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _get_default_branch(repo_path: str) -> str:
+    """Detect the default branch (main or master)."""
+    for branch in ("main", "master"):
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", branch],
+            cwd=repo_path, capture_output=True,
+        )
+        if result.returncode == 0:
+            return branch
+    return "main"
+
+
+def create_worktree(slug: str, base_dir: str, repo_path: str) -> tuple[str, str]:
+    """Create a worktree with a branch for the given slug.
+
+    Returns (worktree_path, branch_name).
+    """
     if not slug or not VALID_SLUG_PATTERN.match(slug):
         raise ValueError(f"Invalid worktree slug: {slug!r}")
     worktree_path = str(Path(base_dir) / slug)
@@ -15,19 +45,30 @@ def create_worktree(slug: str, base_dir: str, repo_path: str) -> str:
     # Clean up any stale worktree at this path from a previous failed task
     if Path(worktree_path).exists():
         remove_worktree(worktree_path, repo_path)
-    # Create a detached worktree at master's commit, then create a stacked branch
-    # inside it. Using --detach avoids conflicts when master is already checked out
-    # in the main worktree. --create-on master tells git stack to parent the new
-    # branch off master regardless of the detached HEAD state.
-    subprocess.run(
-        ["git", "worktree", "add", "--detach", "--", worktree_path, "master"],
-        cwd=repo_path, check=True, capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["git", "stack", "create", slug, "--create-on", "master"],
-        cwd=worktree_path, check=True, capture_output=True, text=True,
-    )
-    return worktree_path
+
+    default_branch = _get_default_branch(repo_path)
+
+    if has_git_stack():
+        # Using --detach avoids conflicts when the default branch is already
+        # checked out in the main worktree. --create-on tells git stack to
+        # parent the new branch off the default branch.
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", "--", worktree_path, default_branch],
+            cwd=repo_path, check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "stack", "create", slug, "--create-on", default_branch],
+            cwd=worktree_path, check=True, capture_output=True, text=True,
+        )
+        branch_name = f"stack/{slug}"
+    else:
+        branch_name = slug
+        subprocess.run(
+            ["git", "worktree", "add", "-b", branch_name, "--", worktree_path, default_branch],
+            cwd=repo_path, check=True, capture_output=True, text=True,
+        )
+
+    return worktree_path, branch_name
 
 
 def ensure_checked_out(worktree_path: str) -> None:

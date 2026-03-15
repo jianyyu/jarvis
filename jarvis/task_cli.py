@@ -55,12 +55,10 @@ def cmd_init(args: argparse.Namespace) -> None:
     slug = name_to_worktree_slug(title, existing_slugs)
 
     try:
-        worktree_path = worktree.create_worktree(slug, base_dir, repo_path)
+        worktree_path, branch_name = worktree.create_worktree(slug, base_dir, repo_path)
     except Exception as e:
         print(f"Error creating worktree: {e}", file=sys.stderr)
         sys.exit(1)
-
-    branch_name = f"stack/{slug}"
     old_cwd = task.cwd
     task.cwd = worktree_path
     task.branches = [branch_name]

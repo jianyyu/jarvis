@@ -108,14 +108,11 @@ class JarvisApp:
 
         console.print(f"  Creating worktree...", style="dim")
         try:
-            cwd = worktree.create_worktree(slug, base_dir, repo_path)
+            cwd, branch_name = worktree.create_worktree(slug, base_dir, repo_path)
         except subprocess.CalledProcessError as e:
             console.print(f"  [red]Error creating worktree:[/red] {e.stderr or e}")
             _pause()
             return
-
-        # Create task
-        branch_name = f"stack/{slug}"
         task = Task(
             id=generate_task_id(),
             name=name,
