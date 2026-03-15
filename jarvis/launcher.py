@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 from pathlib import Path
 
 from jarvis.config import JarvisConfig
 from jarvis.display import console
 from jarvis.models import Task
-from jarvis.worktree import ensure_checked_out
+from jarvis.worktree import ensure_checked_out, has_git_stack
 
 
 def _encode_cwd(cwd: str) -> str:
     """Encode a cwd path the same way Claude Code does for project directories."""
-    import re
     return re.sub(r"[^a-zA-Z0-9]", "-", cwd)
 
 
@@ -37,11 +38,12 @@ def _build_system_prompt(task: Task) -> str:
     lines = [f'You are working on: "{task.name}"']
     if task.branches:
         lines.append(f"Branch: {task.branches[0]}")
-    lines.append("")
-    lines.append("Git workflow rules (follow strictly):")
-    lines.append("- Always use `git stack commit` instead of `git commit` to create commits.")
-    lines.append("- Always use `git stack amend` instead of `git commit --amend` to amend commits.")
-    lines.append("- Always use `git stack push` instead of `git push` or `git pp` to push and create PRs.")
+    if has_git_stack():
+        lines.append("")
+        lines.append("Git workflow rules (follow strictly):")
+        lines.append("- Always use `git stack commit` instead of `git commit` to create commits.")
+        lines.append("- Always use `git stack amend` instead of `git commit --amend` to amend commits.")
+        lines.append("- Always use `git stack push` instead of `git push` or `git pp` to push and create PRs.")
     if task.references:
         lines.append("")
         lines.append("References:")
@@ -52,7 +54,6 @@ def _build_system_prompt(task: Task) -> str:
 
 def _task_env(task: Task) -> dict[str, str]:
     """Build environment with JARVIS_TASK_ID for subprocess access."""
-    import os
     return {**os.environ, "JARVIS_TASK_ID": task.id}
 
 
@@ -108,15 +109,14 @@ def open_claude(task: Task, config: JarvisConfig) -> None:
     if not task.cwd or not Path(task.cwd).exists():
         console.print(f"  [red]Worktree missing:[/red] {task.cwd}", style="red")
         console.print("  Recreating worktree...", style="dim")
-        import subprocess as sp
         Path(task.cwd).parent.mkdir(parents=True, exist_ok=True)
         try:
-            sp.run(
+            subprocess.run(
                 ["git", "worktree", "add", "--detach", "--no-checkout", "--", task.cwd],
                 cwd=config.effective_repo_path(),
                 check=True, capture_output=True, text=True,
             )
-        except sp.CalledProcessError as e:
+        except subprocess.CalledProcessError as e:
             console.print(f"  [red]Failed to recreate worktree:[/red] {e.stderr or e}")
             return
 
