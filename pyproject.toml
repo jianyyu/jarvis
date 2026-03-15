@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Task context manager for Claude Code"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
+]
+
+[project.scripts]
+jarvis = "jarvis.app:main"
+jarvis-task = "jarvis.task_cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
