@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 from datetime import datetime
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -11,7 +13,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from jarvis.commands import parse_command
-from jarvis.config import JarvisConfig, load_config, save_config
+from jarvis.config import JarvisConfig, load_config
 from jarvis.display import (
     clear_screen,
     console,
@@ -102,7 +104,7 @@ class JarvisApp:
         if not repo_path or not base_dir:
             console.print(
                 "  [red]Error:[/red] Could not detect repo path. "
-                "Run jarvis from inside a git repository or set repo_path in ~/.jarvis/config.yaml"
+                "Run jarvis from inside a git repository."
             )
             return
 
@@ -128,11 +130,6 @@ class JarvisApp:
         console.print(f"  Worktree: [dim]{cwd}[/dim]")
         console.print()
 
-        # Save config if first run
-        if not self.config.repo_path:
-            self.config.repo_path = repo_path
-            save_config(self.config)
-
         self.reload_tasks()
         # Select the newly created task
         for i, t in enumerate(self.tasks):
@@ -154,7 +151,7 @@ class JarvisApp:
         if not repo_path:
             console.print(
                 "  [red]Error:[/red] Could not detect repo path. "
-                "Run jarvis from inside a git repository or set repo_path in ~/.jarvis/config.yaml"
+                "Run jarvis from inside a git repository."
             )
             return
 
@@ -170,11 +167,6 @@ class JarvisApp:
 
         console.print(f'  Created chat task: [bold]"{name}"[/bold]')
         console.print()
-
-        # Save config if first run
-        if not self.config.repo_path:
-            self.config.repo_path = repo_path
-            save_config(self.config)
 
         self.reload_tasks()
         for i, t in enumerate(self.tasks):
@@ -410,6 +402,17 @@ def _pause() -> None:
 
 def main() -> None:
     """Entry point for jarvis."""
+    parser = argparse.ArgumentParser(
+        prog="jarvis",
+        description="Task context manager for Claude Code",
+    )
+    parser.add_argument(
+        "-v", "--version",
+        action="version",
+        version=f"%(prog)s {pkg_version('jarvis')}",
+    )
+    parser.parse_args()
+
     app = JarvisApp()
     try:
         app.run_interactive()

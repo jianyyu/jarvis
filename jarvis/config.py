@@ -25,11 +25,10 @@ def _detect_repo_path() -> str:
 
 @dataclass
 class JarvisConfig:
-    repo_path: str = ""
     worktree_base_dir: str = ""
 
     def effective_repo_path(self) -> str:
-        return self.repo_path or _detect_repo_path()
+        return _detect_repo_path()
 
     def effective_worktree_base_dir(self) -> str:
         if self.worktree_base_dir:
@@ -41,14 +40,12 @@ class JarvisConfig:
 
     def to_dict(self) -> dict:
         return {
-            "repo_path": self.repo_path,
             "worktree_base_dir": self.worktree_base_dir,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> JarvisConfig:
         return cls(
-            repo_path=data.get("repo_path", ""),
             worktree_base_dir=data.get("worktree_base_dir", ""),
         )
 
