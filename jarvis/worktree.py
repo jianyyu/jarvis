@@ -13,7 +13,7 @@ def has_git_stack() -> bool:
     """Check if git-stack is installed and available."""
     try:
         subprocess.run(
-            ["git", "stack", "version"],
+            ["git", "stack", "-v"],
             capture_output=True, check=True,
         )
         return True
