@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"jarvis/v2/internal/config"
@@ -50,8 +51,9 @@ func runDashboard() error {
 		fmt.Printf("Attaching to session... [Ctrl-\\ to detach]\n")
 		mgr.Attach(sessionID)
 
-		// After detach, loop back to dashboard
+		// After detach, let terminal settle before restarting bubbletea
 		fmt.Println("\nDetached. Returning to dashboard...")
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -73,8 +75,7 @@ var newCmd = &cobra.Command{
 
 		mgr := session.NewManager(cfg)
 
-		prompt := fmt.Sprintf("You are working on: %q", name)
-		claudeArgs := []string{"claude", "--append-system-prompt", prompt}
+		claudeArgs := []string{"claude"}
 
 		fmt.Printf("Creating session %q...\n", name)
 		sess, err := mgr.Spawn(name, cwd, claudeArgs)
@@ -245,6 +246,37 @@ var doneCmd = &cobra.Command{
 }
 
 
+var rmCmd = &cobra.Command{
+	Use:   "rm [session-name-or-id]",
+	Short: "Delete a session permanently",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := strings.Join(args, " ")
+		sess, err := session.FindSessionByName(name)
+		if err != nil {
+			return err
+		}
+
+		// Kill sidecar if alive
+		socketPath := sidecar.SocketPath(sess.ID)
+		if session.PingSidecar(socketPath) {
+			fmt.Printf("Session %q is still running. Killing sidecar...\n", sess.Name)
+			os.Remove(socketPath)
+			if sess.Sidecar != nil && sess.Sidecar.PID > 0 {
+				if p, err := os.FindProcess(sess.Sidecar.PID); err == nil {
+					p.Signal(syscall.SIGTERM)
+				}
+			}
+		}
+
+		if err := store.DeleteSession(sess.ID); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted session %q (%s).\n", sess.Name, sess.ID)
+		return nil
+	},
+}
+
 func statusIcon(status model.SessionStatus) string {
 	switch status {
 	case model.StatusActive:
@@ -284,7 +316,7 @@ func truncate(s string, max int) string {
 }
 
 func main() {
-	rootCmd.AddCommand(newCmd, chatCmd, attachCmd, lsCmd, statusCmd, doneCmd)
+	rootCmd.AddCommand(newCmd, chatCmd, attachCmd, lsCmd, statusCmd, doneCmd, rmCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

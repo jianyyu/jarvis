@@ -17,6 +17,7 @@ type ListItem struct {
 	Type     ItemType
 	ID       string
 	Name     string
+	ParentID string // folder ID this item belongs to ("" = top-level)
 	Depth    int    // nesting level (0 = top-level)
 	Expanded bool   // only for folders
 

@@ -29,21 +29,29 @@ func findSidecarBinary() (string, error) {
 	// Check next to the current executable
 	exe, err := os.Executable()
 	if err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "jarvis-sidecar")
+		candidate := filepath.Join(filepath.Dir(exe), "jarvis-v2-sidecar")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
 	}
 	// Check PATH
-	path, err := exec.LookPath("jarvis-sidecar")
+	path, err := exec.LookPath("jarvis-v2-sidecar")
 	if err != nil {
-		return "", fmt.Errorf("jarvis-sidecar binary not found (place it next to jarvis or on PATH)")
+		return "", fmt.Errorf("jarvis-v2-sidecar binary not found (place it next to jarvis-v2 or on PATH)")
 	}
 	return path, nil
 }
 
 // Spawn creates a new session and launches a sidecar daemon.
 func (m *Manager) Spawn(name string, cwd string, claudeArgs []string) (*model.Session, error) {
+	// Resolve to absolute path
+	if !filepath.IsAbs(cwd) {
+		abs, err := filepath.Abs(cwd)
+		if err == nil {
+			cwd = abs
+		}
+	}
+
 	now := time.Now()
 	sess := &model.Session{
 		ID:        model.NewID(),
@@ -172,17 +180,22 @@ func (m *Manager) Resume(sess *model.Session) error {
 
 	// Build resume command
 	var claudeArgs []string
-	if sess.ClaudeSessionID != "" && SessionIsValid(sess.ClaudeSessionID, sess.CWD) {
-		claudeArgs = []string{"claude", "--resume", sess.ClaudeSessionID}
+
+	// Try stored session ID first
+	claudeSessionID := sess.ClaudeSessionID
+
+	// If not stored, scan disk for the latest session in this CWD
+	if claudeSessionID == "" || !SessionIsValid(claudeSessionID, sess.CWD) {
+		claudeSessionID = FindLatestSession(sess.CWD)
+	}
+
+	if claudeSessionID != "" {
+		claudeArgs = []string{"claude", "--resume", claudeSessionID}
+		// Store it for next time
+		sess.ClaudeSessionID = claudeSessionID
 	} else {
 		// Can't resume — start fresh
 		claudeArgs = []string{"claude"}
-	}
-
-	// Add system prompt
-	prompt := buildSystemPrompt(sess)
-	if prompt != "" {
-		claudeArgs = append(claudeArgs, "--append-system-prompt", prompt)
 	}
 
 	claudeCmd := strings.Join(claudeArgs, " ")
@@ -194,15 +207,6 @@ func (m *Manager) Resume(sess *model.Session) error {
 	}
 
 	return m.spawnSidecar(sess, claudeCmd)
-}
-
-func buildSystemPrompt(sess *model.Session) string {
-	var lines []string
-	lines = append(lines, fmt.Sprintf(`You are working on: "%s"`, sess.Name))
-	if len(sess.Branches) > 0 {
-		lines = append(lines, fmt.Sprintf("Branch: %s", sess.Branches[0]))
-	}
-	return strings.Join(lines, "\n")
 }
 
 // GetStatus returns the status of a session (live from sidecar or derived).

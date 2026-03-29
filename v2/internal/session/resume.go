@@ -14,13 +14,13 @@ import (
 
 // PingSidecar attempts to connect to a sidecar socket and ping it.
 func PingSidecar(socketPath string) bool {
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
 	if err != nil {
 		return false
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 	codec := protocol.NewCodec(conn)
 	if err := codec.Send(protocol.Request{Action: "ping"}); err != nil {
 		return false
@@ -34,13 +34,13 @@ func PingSidecar(socketPath string) bool {
 
 // GetLiveStatus gets the status of a running sidecar.
 func GetLiveStatus(socketPath string) (model.SidecarState, string, error) {
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
 	if err != nil {
 		return "", "", err
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 	codec := protocol.NewCodec(conn)
 	if err := codec.Send(protocol.Request{Action: "get_status"}); err != nil {
 		return "", "", err

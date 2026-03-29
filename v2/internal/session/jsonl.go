@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]`)
@@ -21,6 +22,41 @@ func SessionJSONLPath(sessionID, cwd string) string {
 	home, _ := os.UserHomeDir()
 	encoded := EncodeCWD(cwd)
 	return filepath.Join(home, ".claude", "projects", encoded, sessionID+".jsonl")
+}
+
+// FindLatestSession scans the Claude project dir for the most recent valid session JSONL.
+func FindLatestSession(cwd string) string {
+	home, _ := os.UserHomeDir()
+	encoded := EncodeCWD(cwd)
+	dir := filepath.Join(home, ".claude", "projects", encoded)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	var bestID string
+	var bestTime time.Time
+
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".jsonl")
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(bestTime) {
+			// Verify it has real conversation data
+			if SessionIsValid(id, cwd) {
+				bestTime = info.ModTime()
+				bestID = id
+			}
+		}
+	}
+	return bestID
 }
 
 // SessionIsValid checks if a JSONL file exists and has at least one user message.

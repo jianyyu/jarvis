@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -35,6 +36,9 @@ type Dashboard struct {
 	cfg      *config.Config
 	mgr      *session.Manager
 
+	// Folder expand state — persists across refreshes
+	expandState map[string]bool // folder ID → expanded
+
 	// Search
 	searchInput textinput.Model
 	searchQuery string
@@ -66,9 +70,13 @@ func NewDashboard(cfg *config.Config) Dashboard {
 	ci := textinput.New()
 	ci.CharLimit = 200
 
+	// Run recovery once at startup
+	session.RecoverAllSessions()
+
 	return Dashboard{
 		cfg:         cfg,
 		mgr:         session.NewManager(cfg),
+		expandState: map[string]bool{"__done__": false}, // Done folder collapsed by default
 		searchInput: si,
 		cmdInput:    ci,
 		mode:        ModeDashboard,
@@ -80,7 +88,7 @@ func (d Dashboard) Init() tea.Cmd {
 }
 
 func tickEvery() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg{}
 	})
 }
@@ -107,6 +115,14 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		d.items = msg.items
+		// Apply persisted expand state to items
+		for i := range d.items {
+			if d.items[i].IsFolder() {
+				if expanded, exists := d.expandState[d.items[i].ID]; exists {
+					d.items[i].Expanded = expanded
+				}
+			}
+		}
 		visible := d.filteredItems()
 		if d.cursor >= len(visible) {
 			d.cursor = max(0, len(visible)-1)
@@ -136,6 +152,31 @@ func (d Dashboard) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// resolveParentFolder returns the folder ID and name to create new items in,
+// based on the current selection:
+//   - cursor on a folder → create inside that folder
+//   - cursor on a session inside a folder → create as sibling (in the same folder)
+//   - cursor on a top-level session or __done__ → create at top level
+func (d Dashboard) resolveParentFolder() (id string, name string) {
+	item := d.selectedItem()
+	if item == nil {
+		return "", ""
+	}
+	if item.IsFolder() && item.ID != "__done__" {
+		return item.ID, item.Name
+	}
+	if item.ParentID != "" && item.ParentID != "__done__" {
+		// Find the parent folder name
+		for _, i := range d.items {
+			if i.ID == item.ParentID {
+				return i.ID, i.Name
+			}
+		}
+		return item.ParentID, ""
+	}
+	return "", ""
+}
+
 func (d Dashboard) selectedItem() *ListItem {
 	visible := d.filteredItems()
 	if d.cursor >= 0 && d.cursor < len(visible) {
@@ -145,14 +186,14 @@ func (d Dashboard) selectedItem() *ListItem {
 	return nil
 }
 
-// findAndToggleFolder finds the folder by ID in d.items and toggles its Expanded state.
+// toggleFolder toggles the expand state for a folder.
 func (d *Dashboard) toggleFolder(id string) {
-	for i := range d.items {
-		if d.items[i].ID == id && d.items[i].IsFolder() {
-			d.items[i].Expanded = !d.items[i].Expanded
-			return
-		}
+	current, exists := d.expandState[id]
+	if !exists {
+		// Default: real folders expanded, __done__ collapsed
+		current = id != "__done__"
 	}
+	d.expandState[id] = !current
 }
 
 func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -199,8 +240,12 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.cmdPrompt = "New session name: "
 		d.cmdInput.SetValue("")
 		d.cmdInput.Focus()
+		parentID, parentName := d.resolveParentFolder()
+		if parentName != "" {
+			d.cmdPrompt = fmt.Sprintf("New session in %s: ", parentName)
+		}
 		d.cmdCallback = func(name string) tea.Cmd {
-			return d.createSession(name)
+			return d.createSession(name, parentID)
 		}
 		d.mode = ModeInput
 		return d, textinput.Blink
@@ -209,14 +254,19 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		d.cmdPrompt = "New folder name: "
 		d.cmdInput.SetValue("")
 		d.cmdInput.Focus()
+		parentID, parentName := d.resolveParentFolder()
+		if parentName != "" {
+			d.cmdPrompt = fmt.Sprintf("New folder in %s: ", parentName)
+		}
 		d.cmdCallback = func(name string) tea.Cmd {
-			return d.createFolder(name)
+			return d.createFolder(name, parentID)
 		}
 		d.mode = ModeInput
 		return d, textinput.Blink
 
 	case "c":
-		return d, d.createChat()
+		parentID, _ := d.resolveParentFolder()
+		return d, d.createChat(parentID)
 
 	case "a":
 		item := d.selectedItem()
@@ -226,8 +276,14 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "d":
 		item := d.selectedItem()
-		if item != nil && item.IsSession() {
+		if item == nil {
+			break
+		}
+		if item.IsSession() {
 			return d, d.markDone(item.ID)
+		}
+		if item.IsFolder() && item.ID != "__done__" {
+			return d, d.markFolderDone(item.ID)
 		}
 
 	case "r":
@@ -247,6 +303,21 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			d.mode = ModeInput
 			return d, textinput.Blink
+		}
+
+	case "x":
+		item := d.selectedItem()
+		if item == nil {
+			break
+		}
+		if item.ID == "__done__" {
+			break
+		}
+		if item.IsSession() {
+			return d, d.deleteSession(item.ID, item.Name)
+		}
+		if item.IsFolder() {
+			return d, d.deleteFolder(item.ID, item.Name)
 		}
 
 	case "ctrl+r":
@@ -296,24 +367,33 @@ func (d Dashboard) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Commands
 
-func (d Dashboard) createSession(name string) tea.Cmd {
+func (d Dashboard) createSession(name string, parentID string) tea.Cmd {
 	return func() tea.Msg {
 		cwd := d.cfg.RepoPath()
 		if cwd == "" {
 			cwd = "."
 		}
-		prompt := fmt.Sprintf("You are working on: %q", name)
-		claudeArgs := []string{"claude", "--append-system-prompt", prompt}
-
-		sess, err := d.mgr.Spawn(name, cwd, claudeArgs)
+		sess, err := d.mgr.Spawn(name, cwd, []string{"claude"})
 		if err != nil {
 			return refreshMsg{items: buildItemList(d.mgr)}
 		}
+
+		// Add as child of parent folder
+		if parentID != "" {
+			sess.ParentID = parentID
+			store.SaveSession(sess)
+			parent, err := store.GetFolder(parentID)
+			if err == nil {
+				parent.Children = append(parent.Children, model.ChildRef{Type: "session", ID: sess.ID})
+				store.SaveFolder(parent)
+			}
+		}
+
 		return attachMsg{sessionID: sess.ID}
 	}
 }
 
-func (d Dashboard) createChat() tea.Cmd {
+func (d Dashboard) createChat(parentID string) tea.Cmd {
 	return func() tea.Msg {
 		cwd := d.cfg.RepoPath()
 		if cwd == "" {
@@ -323,21 +403,43 @@ func (d Dashboard) createChat() tea.Cmd {
 		if err != nil {
 			return refreshMsg{items: buildItemList(d.mgr)}
 		}
+
+		if parentID != "" {
+			sess.ParentID = parentID
+			store.SaveSession(sess)
+			parent, err := store.GetFolder(parentID)
+			if err == nil {
+				parent.Children = append(parent.Children, model.ChildRef{Type: "session", ID: sess.ID})
+				store.SaveFolder(parent)
+			}
+		}
+
 		return attachMsg{sessionID: sess.ID}
 	}
 }
 
-func (d Dashboard) createFolder(name string) tea.Cmd {
+func (d Dashboard) createFolder(name string, parentID string) tea.Cmd {
 	return func() tea.Msg {
 		now := time.Now()
 		f := &model.Folder{
 			ID:        model.NewID(),
 			Type:      "folder",
 			Name:      name,
+			ParentID:  parentID,
 			Status:    "active",
 			CreatedAt: now,
 		}
 		store.SaveFolder(f)
+
+		// Add as child of parent folder
+		if parentID != "" {
+			parent, err := store.GetFolder(parentID)
+			if err == nil {
+				parent.Children = append(parent.Children, model.ChildRef{Type: "folder", ID: f.ID})
+				store.SaveFolder(parent)
+			}
+		}
+
 		return refreshMsg{items: buildItemList(d.mgr)}
 	}
 }
@@ -375,6 +477,118 @@ func (d Dashboard) markDone(sessionID string) tea.Cmd {
 		}
 		return refreshMsg{items: buildItemList(d.mgr)}
 	}
+}
+
+func (d Dashboard) markFolderDone(folderID string) tea.Cmd {
+	return func() tea.Msg {
+		f, err := store.GetFolder(folderID)
+		if err != nil {
+			return refreshMsg{items: buildItemList(d.mgr)}
+		}
+
+		// Mark all child sessions as done
+		now := time.Now()
+		for _, child := range f.Children {
+			if child.Type == "session" {
+				s, err := store.GetSession(child.ID)
+				if err == nil && s.Status != model.StatusDone && s.Status != model.StatusArchived {
+					s.Status = model.StatusDone
+					s.UpdatedAt = now
+					store.SaveSession(s)
+				}
+			}
+		}
+
+		// Mark folder as archived (moves it out of active view)
+		f.Status = "done"
+		store.SaveFolder(f)
+
+		return refreshMsg{items: buildItemList(d.mgr)}
+	}
+}
+
+func (d Dashboard) deleteSession(sessionID, name string) tea.Cmd {
+	return func() tea.Msg {
+		// Kill sidecar if alive
+		socketPath := sidecar.SocketPath(sessionID)
+		if session.PingSidecar(socketPath) {
+			s, err := store.GetSession(sessionID)
+			if err == nil && s.Sidecar != nil && s.Sidecar.PID > 0 {
+				if p, err := os.FindProcess(s.Sidecar.PID); err == nil {
+					p.Signal(os.Kill)
+				}
+			}
+			os.Remove(socketPath)
+		}
+
+		// Remove from parent folder if any
+		s, err := store.GetSession(sessionID)
+		if err == nil && s.ParentID != "" {
+			if parent, err := store.GetFolder(s.ParentID); err == nil {
+				var newChildren []model.ChildRef
+				for _, c := range parent.Children {
+					if !(c.Type == "session" && c.ID == sessionID) {
+						newChildren = append(newChildren, c)
+					}
+				}
+				parent.Children = newChildren
+				store.SaveFolder(parent)
+			}
+		}
+
+		store.DeleteSession(sessionID)
+		return refreshMsg{items: buildItemList(d.mgr)}
+	}
+}
+
+func (d Dashboard) deleteFolder(folderID, name string) tea.Cmd {
+	return func() tea.Msg {
+		deleteFolderRecursive(folderID)
+		return refreshMsg{items: buildItemList(d.mgr)}
+	}
+}
+
+// deleteFolderRecursive deletes a folder and all its descendants.
+func deleteFolderRecursive(folderID string) {
+	f, err := store.GetFolder(folderID)
+	if err != nil {
+		return
+	}
+
+	for _, child := range f.Children {
+		if child.Type == "session" {
+			socketPath := sidecar.SocketPath(child.ID)
+			if session.PingSidecar(socketPath) {
+				s, _ := store.GetSession(child.ID)
+				if s != nil && s.Sidecar != nil && s.Sidecar.PID > 0 {
+					if p, err := os.FindProcess(s.Sidecar.PID); err == nil {
+						p.Signal(os.Kill)
+					}
+				}
+				os.Remove(socketPath)
+			}
+			store.DeleteSession(child.ID)
+		}
+		if child.Type == "folder" {
+			deleteFolderRecursive(child.ID)
+		}
+	}
+
+	// Remove from parent folder if nested
+	if f.ParentID != "" {
+		if parent, err := store.GetFolder(f.ParentID); err == nil {
+			var newChildren []model.ChildRef
+			for _, c := range parent.Children {
+				if !(c.Type == "folder" && c.ID == folderID) {
+					newChildren = append(newChildren, c)
+				}
+			}
+			parent.Children = newChildren
+			store.SaveFolder(parent)
+		}
+	}
+
+	store.DeleteFolder(folderID)
 }
 
 // View
@@ -432,7 +646,7 @@ func (d Dashboard) View() string {
 	case ModeInput:
 		b.WriteString("\n  " + inputStyle.Render(d.cmdPrompt) + d.cmdInput.View())
 	default:
-		help := "  [enter] attach  [n]ew  [c]hat  [f]older  [r]ename  [d]one  [/]search  [q]uit"
+		help := "  [enter] attach  [n]ew  [c]hat  [f]older  [r]ename  [d]one  [x] delete  [/]search  [q]uit"
 		b.WriteString(helpStyle.Render(help))
 	}
 
@@ -545,7 +759,6 @@ func (d Dashboard) AttachSessionID() string {
 
 // buildItemList creates the flat list of items for display.
 func buildItemList(mgr *session.Manager) []ListItem {
-	session.RecoverAllSessions()
 
 	sessions, _ := store.ListSessions(nil)
 	folders, _ := store.ListFolders()
@@ -568,8 +781,19 @@ func buildItemList(mgr *session.Manager) []ListItem {
 	// First add folders with their children
 	usedSessions := make(map[string]bool)
 
+	var doneFolders []*model.Folder
 	for _, f := range folders {
 		if f.ParentID != "" || f.Status == "archived" {
+			continue
+		}
+		if f.Status == "done" {
+			doneFolders = append(doneFolders, f)
+			// Mark all children as used so they don't appear in active
+			for _, child := range f.Children {
+				if child.Type == "session" {
+					usedSessions[child.ID] = true
+				}
+			}
 			continue
 		}
 		items := buildFolderItem(f, 0, sessionMap, folderMap, mgr, usedSessions)
@@ -595,22 +819,30 @@ func buildItemList(mgr *session.Manager) []ListItem {
 	// Sort active: blocked first
 	sortItems(activeItems)
 
+	// Add done folders and their children to doneItems
+	for _, f := range doneFolders {
+		folderItems := buildFolderItem(f, 1, sessionMap, folderMap, mgr, usedSessions)
+		doneItems = append(doneItems, folderItems...)
+	}
+
 	// Add "Done" virtual folder at the bottom if there are done items
 	if len(doneItems) > 0 {
+		totalDone := len(doneItems)
 		doneFolderItem := ListItem{
 			Type:       ItemFolder,
 			ID:         "__done__",
 			Name:       "Done",
 			Depth:      0,
 			Expanded:   false, // collapsed by default
-			DoneCount:  len(doneItems),
-			TotalCount: len(doneItems),
+			DoneCount:  totalDone,
+			TotalCount: totalDone,
 		}
 		activeItems = append(activeItems, doneFolderItem)
-		// Children are only shown when expanded — handled in filteredItems
-		// Store done items so they can be shown when expanded
+		// Ensure unfiled done sessions have depth 1
 		for i := range doneItems {
-			doneItems[i].Depth = 1
+			if doneItems[i].Depth == 0 {
+				doneItems[i].Depth = 1
+			}
 		}
 		activeItems = append(activeItems, doneItems...)
 	}
@@ -634,6 +866,7 @@ func buildFolderItem(f *model.Folder, depth int, sessionMap map[string]*model.Se
 		Type:       ItemFolder,
 		ID:         f.ID,
 		Name:       f.Name,
+		ParentID:   f.ParentID,
 		Depth:      depth,
 		Expanded:   true, // default expanded
 		DoneCount:  doneCount,
@@ -679,14 +912,15 @@ func buildSessionItem(s *model.Session, depth int, mgr *session.Manager) ListIte
 	}
 
 	return ListItem{
-		Type:   ItemSession,
-		ID:     s.ID,
-		Name:   s.Name,
-		Depth:  depth,
-		Status: s.Status,
-		State:  state,
-		Detail: detail,
-		Age:    formatAge(s.UpdatedAt),
+		Type:     ItemSession,
+		ID:       s.ID,
+		Name:     s.Name,
+		ParentID: s.ParentID,
+		Depth:    depth,
+		Status:   s.Status,
+		State:    state,
+		Detail:   detail,
+		Age:      formatAge(s.UpdatedAt),
 	}
 }
 
