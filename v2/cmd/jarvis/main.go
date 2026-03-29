@@ -11,13 +11,48 @@ import (
 	"jarvis/v2/internal/session"
 	"jarvis/v2/internal/sidecar"
 	"jarvis/v2/internal/store"
+	"jarvis/v2/internal/tui"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "jarvis",
 	Short: "Multi-session Claude Code commander",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDashboard()
+	},
+}
+
+func runDashboard() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	for {
+		dashboard := tui.NewDashboard(cfg)
+		p := tea.NewProgram(dashboard, tea.WithAltScreen())
+		m, err := p.Run()
+		if err != nil {
+			return err
+		}
+
+		d := m.(tui.Dashboard)
+		sessionID := d.AttachSessionID()
+		if sessionID == "" {
+			return nil // user quit
+		}
+
+		// Attach to session
+		mgr := session.NewManager(cfg)
+		fmt.Printf("Attaching to session... [Ctrl-\\ to detach]\n")
+		mgr.Attach(sessionID)
+
+		// After detach, loop back to dashboard
+		fmt.Println("\nDetached. Returning to dashboard...")
+	}
 }
 
 var newCmd = &cobra.Command{
@@ -38,7 +73,6 @@ var newCmd = &cobra.Command{
 
 		mgr := session.NewManager(cfg)
 
-		// Build claude command
 		prompt := fmt.Sprintf("You are working on: %q", name)
 		claudeArgs := []string{"claude", "--append-system-prompt", prompt}
 
@@ -106,7 +140,6 @@ var lsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List all sessions with status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// First recover dead sidecars
 		session.RecoverAllSessions()
 
 		sessions, err := store.ListSessions(nil)
@@ -195,7 +228,6 @@ var doneCmd = &cobra.Command{
 			return err
 		}
 
-		// Kill sidecar if alive
 		socketPath := sidecar.SocketPath(sess.ID)
 		if session.PingSidecar(socketPath) {
 			fmt.Println("Session is still running. Kill it first or detach.")
@@ -211,6 +243,7 @@ var doneCmd = &cobra.Command{
 		return nil
 	},
 }
+
 
 func statusIcon(status model.SessionStatus) string {
 	switch status {
