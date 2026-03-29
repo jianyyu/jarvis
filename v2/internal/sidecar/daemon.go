@@ -103,6 +103,9 @@ func (d *Daemon) Run() error {
 	// Goroutine: periodic state persistence
 	go d.persistStateLoop()
 
+	// Goroutine: idle detection — checks if output has stopped
+	go d.idleDetectionLoop()
+
 	// Wait for Claude process to exit
 	err = cmd.Wait()
 	exitCode := 0
@@ -152,13 +155,16 @@ func (d *Daemon) readPTY() {
 		}
 		data := buf[:n]
 		now := time.Now()
+
+		// Compute elapsed since last output BEFORE updating the timestamp
+		lastOutput := d.lastOutputT.Load().(time.Time)
+		elapsed := now.Sub(lastOutput)
 		d.lastOutputT.Store(now)
 
 		// Write to ring buffer
 		d.ringBuf.Write(data)
 
 		// Status detection on raw bytes
-		elapsed := now.Sub(d.lastOutputT.Load().(time.Time))
 		state, det := DetectState(data, elapsed)
 		d.state.Store(state)
 		if det != "" {
@@ -274,6 +280,23 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 			encoded := base64.StdEncoding.EncodeToString(allBytes)
 			codec.Send(protocol.Response{Event: "buffer", Data: encoded})
+		}
+	}
+}
+
+func (d *Daemon) idleDetectionLoop() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		state := d.state.Load().(model.SidecarState)
+		if state == model.StateExited {
+			return
+		}
+		lastOutput := d.lastOutputT.Load().(time.Time)
+		elapsed := time.Since(lastOutput)
+		if elapsed >= idleTimeout && state == model.StateWorking {
+			d.state.Store(model.StateIdle)
+			d.detail.Store("waiting for user input")
 		}
 	}
 }

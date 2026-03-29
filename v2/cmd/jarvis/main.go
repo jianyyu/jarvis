@@ -47,7 +47,7 @@ var newCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Session %s created. Attaching...\n", sess.ID)
+		fmt.Printf("Session %s created. Attaching... [Ctrl-\\ to detach]\n", sess.ID)
 
 		return mgr.Attach(sess.ID)
 	},
@@ -75,7 +75,7 @@ var chatCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Session %s created. Attaching...\n", sess.ID)
+		fmt.Printf("Session %s created. Attaching... [Ctrl-\\ to detach]\n", sess.ID)
 
 		return mgr.Attach(sess.ID)
 	},
@@ -97,7 +97,7 @@ var attachCmd = &cobra.Command{
 		}
 
 		mgr := session.NewManager(cfg)
-		fmt.Printf("Attaching to %q (%s)...\n", sess.Name, sess.ID)
+		fmt.Printf("Attaching to %q (%s)... [Ctrl-\\ to detach]\n", sess.Name, sess.ID)
 		return mgr.Attach(sess.ID)
 	},
 }
