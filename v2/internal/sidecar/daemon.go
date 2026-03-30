@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,7 +63,8 @@ func NewDaemon(cfg DaemonConfig) *Daemon {
 
 // SocketPath returns the Unix socket path for a session.
 func SocketPath(sessionID string) string {
-	return filepath.Join("/tmp", "jarvis", sessionID+".sock")
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".jarvis", "sockets", sessionID+".sock")
 }
 
 // Run starts the sidecar daemon. Blocks until the Claude process exits.
@@ -85,6 +87,9 @@ func (d *Daemon) Run() error {
 	d.state.Store(model.StateWorking)
 
 	log.Printf("sidecar: started process PID %d for session %s", cmd.Process.Pid, d.cfg.SessionID)
+
+	// Detect Claude session ID by watching for new JSONL files
+	go d.detectClaudeSessionID()
 
 	// Start socket listener
 	listener, err := net.Listen("unix", d.socketPath)
@@ -118,6 +123,19 @@ func (d *Daemon) Run() error {
 	log.Printf("sidecar: process exited with code %d", exitCode)
 	d.state.Store(model.StateExited)
 	d.detail.Store(fmt.Sprintf("exit code %d", exitCode))
+
+	// Mark session as suspended (not done — user marks done explicitly)
+	// This way re-entering the session will resume the Claude conversation.
+	if s, err := store.GetSession(d.cfg.SessionID); err == nil {
+		s.Status = model.StatusSuspended
+		s.LastKnownState = "exited"
+		s.LastKnownDetail = fmt.Sprintf("exit code %d", exitCode)
+		now := time.Now()
+		s.UpdatedAt = now
+		s.LastActivityAt = &now
+		s.Sidecar = nil
+		store.SaveSession(s)
+	}
 
 	// Notify attached client
 	d.attachMu.Lock()
@@ -200,7 +218,16 @@ func (d *Daemon) acceptConnections() {
 
 func (d *Daemon) handleConnection(conn net.Conn) {
 	codec := protocol.NewCodec(conn)
-	defer conn.Close()
+	defer func() {
+		// Clean up attached reference if this connection was the attached client
+		d.attachMu.Lock()
+		if d.attachedConn == conn {
+			d.attachedConn = nil
+			d.attachedCodec = nil
+		}
+		d.attachMu.Unlock()
+		conn.Close()
+	}()
 
 	for {
 		var req protocol.Request
@@ -283,6 +310,56 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 		}
 	}
 }
+
+// detectClaudeSessionID watches for new JSONL files to capture the Claude session ID.
+func (d *Daemon) detectClaudeSessionID() {
+	// Compute the Claude project dir for this CWD
+	encoded := nonAlphaNum.ReplaceAllString(d.cfg.CWD, "-")
+	home, _ := os.UserHomeDir()
+	projectDir := filepath.Join(home, ".claude", "projects", encoded)
+
+	// Snapshot existing files
+	existingFiles := make(map[string]bool)
+	if entries, err := os.ReadDir(projectDir); err == nil {
+		for _, e := range entries {
+			existingFiles[e.Name()] = true
+		}
+	}
+
+	// Poll for new JSONL file (check every 1s for up to 30s)
+	for i := 0; i < 30; i++ {
+		time.Sleep(1 * time.Second)
+
+		state := d.state.Load().(model.SidecarState)
+		if state == model.StateExited {
+			return
+		}
+
+		entries, err := os.ReadDir(projectDir)
+		if err != nil {
+			continue
+		}
+
+		for _, e := range entries {
+			name := e.Name()
+			if !existingFiles[name] && filepath.Ext(name) == ".jsonl" {
+				sessionID := name[:len(name)-len(".jsonl")]
+				log.Printf("sidecar: detected Claude session ID: %s", sessionID)
+
+				// Store it in session.yaml
+				if s, err := store.GetSession(d.cfg.SessionID); err == nil {
+					s.ClaudeSessionID = sessionID
+					s.UpdatedAt = time.Now()
+					store.SaveSession(s)
+				}
+				return
+			}
+		}
+	}
+	log.Printf("sidecar: could not detect Claude session ID within 30s")
+}
+
+var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
 func (d *Daemon) idleDetectionLoop() {
 	ticker := time.NewTicker(2 * time.Second)

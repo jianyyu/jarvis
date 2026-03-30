@@ -81,7 +81,11 @@ func (rb *RingBuffer) Len() int {
 
 // Bytes returns all stored content as a single byte slice (for buffer catch-up on attach).
 func (rb *RingBuffer) Bytes() []byte {
-	lines := rb.LastN(rb.Len())
+	rb.mu.Lock()
+	n := rb.count
+	rb.mu.Unlock()
+
+	lines := rb.LastN(n)
 	var buf bytes.Buffer
 	for _, l := range lines {
 		buf.Write(l)

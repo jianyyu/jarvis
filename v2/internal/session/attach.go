@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -23,7 +24,6 @@ func Attach(socketPath string) error {
 	if err != nil {
 		return fmt.Errorf("connect to sidecar: %w", err)
 	}
-	defer conn.Close()
 
 	codec := protocol.NewCodec(conn)
 
@@ -41,17 +41,18 @@ func Attach(socketPath string) error {
 	// Put terminal in raw mode
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
+		conn.Close()
 		return fmt.Errorf("make raw: %w", err)
 	}
-	defer term.Restore(fd, oldState)
+
+	// Ignore SIGQUIT — Ctrl-\ sends SIGQUIT which would kill us
+	signal.Ignore(syscall.SIGQUIT)
 
 	// Handle SIGWINCH
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGWINCH)
-	defer signal.Stop(sigCh)
+	sigWinch := make(chan os.Signal, 1)
+	signal.Notify(sigWinch, syscall.SIGWINCH)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Handle resize signals
 	go func() {
@@ -59,7 +60,7 @@ func Attach(socketPath string) error {
 			select {
 			case <-ctx.Done():
 				return
-			case <-sigCh:
+			case <-sigWinch:
 				c, r, err := term.GetSize(fd)
 				if err == nil {
 					codec.Send(protocol.Request{Action: "resize", Cols: c, Rows: r})
@@ -91,12 +92,41 @@ func Attach(socketPath string) error {
 	}()
 
 	// Terminal → sidecar
+	// Use a pipe so we can close it to unblock the reader goroutine.
+	// Without this, the goroutine blocks on os.Stdin.Read() forever and
+	// competes with bubbletea after we return.
+	pipeR, pipeW, err := os.Pipe()
+	if err != nil {
+		term.Restore(fd, oldState)
+		conn.Close()
+		return fmt.Errorf("create pipe: %w", err)
+	}
+
+	// Copy stdin → pipe (will be killed by closing pipeW)
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
-				cancel()
+				return
+			}
+			if _, err := pipeW.Write(buf[:n]); err != nil {
+				return // pipe closed
+			}
+		}
+	}()
+
+	// Read pipe → send to sidecar
+	stdinDone := make(chan struct{})
+	go func() {
+		defer close(stdinDone)
+		buf := make([]byte, 4096)
+		for {
+			n, err := pipeR.Read(buf)
+			if err != nil {
+				if err != io.EOF {
+					cancel()
+				}
 				return
 			}
 			data := buf[:n]
@@ -115,5 +145,25 @@ func Attach(socketPath string) error {
 	}()
 
 	<-ctx.Done()
+
+	// Clean up in order:
+	// 1. Restore terminal (so bubbletea gets a clean state)
+	term.Restore(fd, oldState)
+
+	// 2. Close pipe to unblock the stdin reader goroutine
+	pipeW.Close()
+	pipeR.Close()
+
+	// 3. Wait for stdin goroutine to exit
+	select {
+	case <-stdinDone:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// 4. Stop signals, close connection
+	signal.Stop(sigWinch)
+	signal.Reset(syscall.SIGQUIT)
+	conn.Close()
+
 	return nil
 }

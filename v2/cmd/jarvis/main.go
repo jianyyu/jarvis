@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"jarvis/v2/internal/config"
@@ -11,13 +12,49 @@ import (
 	"jarvis/v2/internal/session"
 	"jarvis/v2/internal/sidecar"
 	"jarvis/v2/internal/store"
+	"jarvis/v2/internal/tui"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "jarvis",
 	Short: "Multi-session Claude Code commander",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runDashboard()
+	},
+}
+
+func runDashboard() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	for {
+		dashboard := tui.NewDashboard(cfg)
+		p := tea.NewProgram(dashboard, tea.WithAltScreen())
+		m, err := p.Run()
+		if err != nil {
+			return err
+		}
+
+		d := m.(tui.Dashboard)
+		sessionID := d.AttachSessionID()
+		if sessionID == "" {
+			return nil // user quit
+		}
+
+		// Attach to session
+		mgr := session.NewManager(cfg)
+		fmt.Printf("Attaching to session... [Ctrl-\\ to detach]\n")
+		mgr.Attach(sessionID)
+
+		// After detach, let terminal settle before restarting bubbletea
+		fmt.Println("\nDetached. Returning to dashboard...")
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 var newCmd = &cobra.Command{
@@ -38,9 +75,7 @@ var newCmd = &cobra.Command{
 
 		mgr := session.NewManager(cfg)
 
-		// Build claude command
-		prompt := fmt.Sprintf("You are working on: %q", name)
-		claudeArgs := []string{"claude", "--append-system-prompt", prompt}
+		claudeArgs := []string{"claude"}
 
 		fmt.Printf("Creating session %q...\n", name)
 		sess, err := mgr.Spawn(name, cwd, claudeArgs)
@@ -106,7 +141,6 @@ var lsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List all sessions with status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// First recover dead sidecars
 		session.RecoverAllSessions()
 
 		sessions, err := store.ListSessions(nil)
@@ -195,10 +229,9 @@ var doneCmd = &cobra.Command{
 			return err
 		}
 
-		// Kill sidecar if alive
 		socketPath := sidecar.SocketPath(sess.ID)
 		if session.PingSidecar(socketPath) {
-			fmt.Println("Session is still running. Kill it first or detach.")
+			fmt.Println("Session is still running. Use 'jarvis-v2 rm' to stop and delete, or exit Claude first.")
 			return nil
 		}
 
@@ -208,6 +241,38 @@ var doneCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Session %q marked as done.\n", sess.Name)
+		return nil
+	},
+}
+
+
+var rmCmd = &cobra.Command{
+	Use:   "rm [session-name-or-id]",
+	Short: "Delete a session permanently",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := strings.Join(args, " ")
+		sess, err := session.FindSessionByName(name)
+		if err != nil {
+			return err
+		}
+
+		// Kill sidecar if alive
+		socketPath := sidecar.SocketPath(sess.ID)
+		if session.PingSidecar(socketPath) {
+			fmt.Printf("Session %q is still running. Killing sidecar...\n", sess.Name)
+			os.Remove(socketPath)
+			if sess.Sidecar != nil && sess.Sidecar.PID > 0 {
+				if p, err := os.FindProcess(sess.Sidecar.PID); err == nil {
+					p.Signal(syscall.SIGTERM)
+				}
+			}
+		}
+
+		if err := store.DeleteSession(sess.ID); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted session %q (%s).\n", sess.Name, sess.ID)
 		return nil
 	},
 }
@@ -251,7 +316,7 @@ func truncate(s string, max int) string {
 }
 
 func main() {
-	rootCmd.AddCommand(newCmd, chatCmd, attachCmd, lsCmd, statusCmd, doneCmd)
+	rootCmd.AddCommand(newCmd, chatCmd, attachCmd, lsCmd, statusCmd, doneCmd, rmCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
