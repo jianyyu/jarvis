@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"gopkg.in/yaml.v3"
 )
 
 // Mode represents the dashboard state.
@@ -38,6 +40,9 @@ type Dashboard struct {
 
 	// Folder expand state — persists across refreshes
 	expandState map[string]bool // folder ID → expanded
+
+	// Scroll offset for viewport
+	scrollOffset int
 
 	// Search
 	searchInput textinput.Model
@@ -73,14 +78,66 @@ func NewDashboard(cfg *config.Config) Dashboard {
 	// Run recovery once at startup
 	session.RecoverAllSessions()
 
-	return Dashboard{
-		cfg:         cfg,
-		mgr:         session.NewManager(cfg),
-		expandState: map[string]bool{"__done__": false}, // Done folder collapsed by default
-		searchInput: si,
-		cmdInput:    ci,
-		mode:        ModeDashboard,
+	expandState := map[string]bool{"__done__": false}
+	cursor := 0
+	scrollOffset := 0
+
+	if saved := loadState(); saved != nil {
+		if saved.ExpandState != nil {
+			expandState = saved.ExpandState
+		}
+		cursor = saved.Cursor
+		scrollOffset = saved.ScrollOffset
 	}
+
+	return Dashboard{
+		cfg:          cfg,
+		mgr:          session.NewManager(cfg),
+		expandState:  expandState,
+		cursor:       cursor,
+		scrollOffset: scrollOffset,
+		searchInput:  si,
+		cmdInput:     ci,
+		mode:         ModeDashboard,
+	}
+}
+
+// dashboardState is the persisted view state.
+type dashboardState struct {
+	ExpandState  map[string]bool `yaml:"expand_state"`
+	Cursor       int             `yaml:"cursor"`
+	ScrollOffset int             `yaml:"scroll_offset"`
+}
+
+func statePath() string {
+	return filepath.Join(store.JarvisHome(), "dashboard_state.yaml")
+}
+
+// SaveState persists the current view state to disk.
+func (d Dashboard) SaveState() {
+	state := dashboardState{
+		ExpandState:  d.expandState,
+		Cursor:       d.cursor,
+		ScrollOffset: d.scrollOffset,
+	}
+	data, err := yaml.Marshal(&state)
+	if err != nil {
+		return
+	}
+	store.WriteAtomic(statePath(), data)
+}
+
+// loadState reads persisted view state from disk.
+func loadState() *dashboardState {
+	data, err := os.ReadFile(statePath())
+	if err != nil {
+		return nil
+	}
+	var state dashboardState
+	if err := yaml.Unmarshal(data, &state); err != nil {
+		return nil
+	}
+	return &state
 }
 
 func (d Dashboard) Init() tea.Cmd {
@@ -127,6 +184,7 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if d.cursor >= len(visible) {
 			d.cursor = max(0, len(visible)-1)
 		}
+		d.adjustScroll()
 		return d, nil
 
 	case statusMsgClear:
@@ -190,10 +248,27 @@ func (d Dashboard) selectedItem() *ListItem {
 func (d *Dashboard) toggleFolder(id string) {
 	current, exists := d.expandState[id]
 	if !exists {
-		// Default: real folders expanded, __done__ collapsed
-		current = id != "__done__"
+		// Default: all folders collapsed
+		current = false
 	}
 	d.expandState[id] = !current
+}
+
+// adjustScroll ensures scrollOffset keeps cursor visible.
+func (d *Dashboard) adjustScroll() {
+	maxRows := d.height - 4
+	if maxRows < 5 {
+		maxRows = 5
+	}
+	if d.cursor < d.scrollOffset {
+		d.scrollOffset = d.cursor
+	}
+	if d.cursor >= d.scrollOffset+maxRows {
+		d.scrollOffset = d.cursor - maxRows + 1
+	}
+	if d.scrollOffset < 0 {
+		d.scrollOffset = 0
+	}
 }
 
 func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -201,16 +276,19 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "q", "ctrl+c":
+		d.SaveState()
 		return d, tea.Quit
 
 	case "up", "k":
 		if d.cursor > 0 {
 			d.cursor--
+			d.adjustScroll()
 		}
 
 	case "down", "j":
 		if d.cursor < len(visible)-1 {
 			d.cursor++
+			d.adjustScroll()
 		}
 
 	case "enter":
@@ -219,16 +297,13 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if item.IsSession() && item.Status != model.StatusArchived {
+			d.SaveState()
 			return d, func() tea.Msg { return attachMsg{sessionID: item.ID} }
 		}
 		if item.IsFolder() {
 			d.toggleFolder(item.ID)
-			// Adjust cursor if it would go out of bounds after collapse
-			newVisible := d.filteredItems()
-			if d.cursor >= len(newVisible) {
-				d.cursor = max(0, len(newVisible)-1)
-			}
-			return d, nil
+			// Refresh immediately so the list reflects the new state
+			return d, d.refreshItems()
 		}
 
 	case "/":
@@ -622,16 +697,32 @@ func (d Dashboard) View() string {
 		b.WriteString(dimStyle.Render("  No sessions. Press [n] to create one.\n"))
 	}
 
-	for i, item := range visibleItems {
-		cursor := "  "
-		if i == d.cursor {
-			cursor = selectedStyle.Render("❯ ")
-		}
+	// Reserve lines for header (2) and footer (2)
+	maxRows := d.height - 4
+	if maxRows < 5 {
+		maxRows = 5
+	}
 
+	// Render only visible rows within scroll window
+	end := d.scrollOffset + maxRows
+	if end > len(visibleItems) {
+		end = len(visibleItems)
+	}
+	start := d.scrollOffset
+	if start < 0 {
+		start = 0
+	}
+
+	for i := start; i < end; i++ {
+		item := visibleItems[i]
 		indent := strings.Repeat("  ", item.Depth)
 		line := d.renderItem(item)
 
-		b.WriteString(cursor + indent + line + "\n")
+		if i == d.cursor {
+			b.WriteString(selectedStyle.Render("▌") + " " + indent + line + "\n")
+		} else {
+			b.WriteString("  " + indent + line + "\n")
+		}
 	}
 
 	// Status message
@@ -669,7 +760,6 @@ func (d Dashboard) renderItem(item ListItem) string {
 
 	// Session
 	icon := sessionIcon(item.Status, item.State)
-	name := item.Name
 
 	var stateStr string
 	switch {
@@ -689,18 +779,23 @@ func (d Dashboard) renderItem(item ListItem) string {
 		stateStr = dimStyle.Render(string(item.Status))
 	}
 
-	detail := ""
-	if item.Detail != "" {
-		detail = dimStyle.Render(truncate(item.Detail, 35))
-	}
-
 	age := dimStyle.Render(item.Age)
 
-	// Format: icon name     state    detail    age
-	namePad := lipgloss.NewStyle().Width(28).Render(name)
+	// Dynamic name width: use available terminal width
+	// Layout: cursor(2) + indent(depth*2) + icon(2) + name + state(12) + age(6) + padding(4)
+	nameWidth := d.width - 2 - item.Depth*2 - 2 - 12 - 6 - 4
+	if nameWidth < 20 {
+		nameWidth = 20
+	}
+	if nameWidth > 80 {
+		nameWidth = 80
+	}
+
+	name := truncate(item.Name, nameWidth)
+	namePad := lipgloss.NewStyle().Width(nameWidth).Render(name)
 	statePad := lipgloss.NewStyle().Width(12).Render(stateStr)
 
-	return fmt.Sprintf("%s %s %s %s  %s", icon, namePad, statePad, detail, age)
+	return fmt.Sprintf("%s %s %s %s", icon, namePad, statePad, age)
 }
 
 func sessionIcon(status model.SessionStatus, state model.SidecarState) string {
@@ -726,8 +821,8 @@ func (d Dashboard) isExpanded(id string) bool {
 	if expanded, exists := d.expandState[id]; exists {
 		return expanded
 	}
-	// Default: real folders expanded, __done__ collapsed
-	return id != "__done__"
+	// Default: all folders collapsed
+	return false
 }
 
 func (d Dashboard) filteredItems() []ListItem {
@@ -877,24 +972,33 @@ func buildFolderItem(f *model.Folder, depth int, sessionMap map[string]*model.Se
 		Name:       f.Name,
 		ParentID:   f.ParentID,
 		Depth:      depth,
-		Expanded:   true, // default expanded
+		Expanded:   false, // default collapsed
 		DoneCount:  doneCount,
 		TotalCount: totalCount,
 	}}
 
-	// Add children
+	// Add children: active sessions first, then done
+	var activeChildren []ListItem
+	var doneChildren []ListItem
 	for _, child := range f.Children {
 		if child.Type == "session" {
 			if s, ok := sessionMap[child.ID]; ok && s.Status != model.StatusArchived {
-				items = append(items, buildSessionItem(s, depth+1, mgr))
+				item := buildSessionItem(s, depth+1, mgr)
+				if s.Status == model.StatusDone {
+					doneChildren = append(doneChildren, item)
+				} else {
+					activeChildren = append(activeChildren, item)
+				}
 				used[s.ID] = true
 			}
 		} else if child.Type == "folder" {
 			if cf, ok := folderMap[child.ID]; ok && cf.Status != "archived" {
-				items = append(items, buildFolderItem(cf, depth+1, sessionMap, folderMap, mgr, used)...)
+				activeChildren = append(activeChildren, buildFolderItem(cf, depth+1, sessionMap, folderMap, mgr, used)...)
 			}
 		}
 	}
+	items = append(items, activeChildren...)
+	items = append(items, doneChildren...)
 
 	return items
 }

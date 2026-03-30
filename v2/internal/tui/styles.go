@@ -12,7 +12,8 @@ var (
 
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("212"))
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("63"))
 
 	folderStyle = lipgloss.NewStyle().
 			Bold(true).
