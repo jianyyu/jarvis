@@ -1,4 +1,10 @@
 jarvis
 sidecar
 jarvis-sidecar
+jarvis-linux-*
+sidecar-linux-*
 mock_claude
+.pytest_cache/
+*.egg-info/
+dist/
+build/
