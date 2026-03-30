@@ -1,4 +1,4 @@
-module jarvis/v2
+module jarvis
 
 go 1.24.2
 

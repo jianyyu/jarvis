@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"jarvis/v2/internal/model"
+	"jarvis/internal/model"
 
 	"gopkg.in/yaml.v3"
 )

@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"jarvis/v2/internal/protocol"
+	"jarvis/internal/protocol"
 
 	"golang.org/x/term"
 )

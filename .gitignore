@@ -1,8 +1,4 @@
-*.egg-info/
-__pycache__/
-*.pyc
-.pytest_cache/
-dist/
-build/
-.venv/
-.env
+jarvis
+sidecar
+jarvis-sidecar
+mock_claude

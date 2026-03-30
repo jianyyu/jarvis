@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"jarvis/v2/internal/model"
+	"jarvis/internal/model"
 )
 
 // ItemType distinguishes folders from sessions in the flat list.

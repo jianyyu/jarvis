@@ -9,10 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"jarvis/v2/internal/config"
-	"jarvis/v2/internal/model"
-	"jarvis/v2/internal/sidecar"
-	"jarvis/v2/internal/store"
+	"jarvis/internal/config"
+	"jarvis/internal/model"
+	"jarvis/internal/sidecar"
+	"jarvis/internal/store"
 
 	"golang.org/x/term"
 )

@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
-	"jarvis/v2/internal/model"
-	"jarvis/v2/internal/protocol"
-	"jarvis/v2/internal/sidecar"
-	"jarvis/v2/internal/store"
+	"jarvis/internal/model"
+	"jarvis/internal/protocol"
+	"jarvis/internal/sidecar"
+	"jarvis/internal/store"
 )
 
 // PingSidecar attempts to connect to a sidecar socket and ping it.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"jarvis/v2/internal/model"
+	"jarvis/internal/model"
 )
 
 func TestSessionRoundTrip(t *testing.T) {
