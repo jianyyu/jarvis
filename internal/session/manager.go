@@ -31,15 +31,15 @@ func findSidecarBinary() (string, error) {
 	// Check next to the current executable
 	exe, err := os.Executable()
 	if err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "jarvis-v2-sidecar")
+		candidate := filepath.Join(filepath.Dir(exe), "jarvis-sidecar")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
 		}
 	}
 	// Check PATH
-	path, err := exec.LookPath("jarvis-v2-sidecar")
+	path, err := exec.LookPath("jarvis-sidecar")
 	if err != nil {
-		return "", fmt.Errorf("jarvis-v2-sidecar binary not found (place it next to jarvis-v2 or on PATH)")
+		return "", fmt.Errorf("jarvis-sidecar binary not found (place it next to jarvis or on PATH)")
 	}
 	return path, nil
 }
