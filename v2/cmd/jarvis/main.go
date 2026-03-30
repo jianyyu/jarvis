@@ -231,7 +231,7 @@ var doneCmd = &cobra.Command{
 
 		socketPath := sidecar.SocketPath(sess.ID)
 		if session.PingSidecar(socketPath) {
-			fmt.Println("Session is still running. Kill it first or detach.")
+			fmt.Println("Session is still running. Use 'jarvis-v2 rm' to stop and delete, or exit Claude first.")
 			return nil
 		}
 

@@ -63,7 +63,8 @@ func NewDaemon(cfg DaemonConfig) *Daemon {
 
 // SocketPath returns the Unix socket path for a session.
 func SocketPath(sessionID string) string {
-	return filepath.Join("/tmp", "jarvis", sessionID+".sock")
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".jarvis", "sockets", sessionID+".sock")
 }
 
 // Run starts the sidecar daemon. Blocks until the Claude process exits.
@@ -217,7 +218,16 @@ func (d *Daemon) acceptConnections() {
 
 func (d *Daemon) handleConnection(conn net.Conn) {
 	codec := protocol.NewCodec(conn)
-	defer conn.Close()
+	defer func() {
+		// Clean up attached reference if this connection was the attached client
+		d.attachMu.Lock()
+		if d.attachedConn == conn {
+			d.attachedConn = nil
+			d.attachedCodec = nil
+		}
+		d.attachMu.Unlock()
+		conn.Close()
+	}()
 
 	for {
 		var req protocol.Request

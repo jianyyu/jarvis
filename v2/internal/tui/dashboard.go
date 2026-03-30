@@ -656,7 +656,7 @@ func (d Dashboard) View() string {
 func (d Dashboard) renderItem(item ListItem) string {
 	if item.IsFolder() {
 		arrow := "▶"
-		if item.Expanded {
+		if d.isExpanded(item.ID) {
 			arrow = "▼"
 		}
 		name := folderStyle.Render(item.Name)
@@ -721,35 +721,44 @@ func sessionIcon(status model.SessionStatus, state model.SidecarState) string {
 	}
 }
 
+// isExpanded checks the live expand state for a folder (not the stale item.Expanded field).
+func (d Dashboard) isExpanded(id string) bool {
+	if expanded, exists := d.expandState[id]; exists {
+		return expanded
+	}
+	// Default: real folders expanded, __done__ collapsed
+	return id != "__done__"
+}
+
 func (d Dashboard) filteredItems() []ListItem {
-	// First apply expand/collapse visibility
+	// If searching, skip collapse — show all matches
+	if d.searchQuery != "" {
+		query := strings.ToLower(d.searchQuery)
+		var result []ListItem
+		for _, item := range d.items {
+			if strings.Contains(strings.ToLower(item.Name), query) {
+				result = append(result, item)
+			}
+		}
+		return result
+	}
+
+	// No search — apply expand/collapse using live expandState
 	var visible []ListItem
-	skipDepth := -1 // skip children deeper than this when a folder is collapsed
+	skipDepth := -1
 	for _, item := range d.items {
 		if skipDepth >= 0 && item.Depth > skipDepth {
 			continue // hidden by collapsed parent
 		}
 		skipDepth = -1
 
-		if item.IsFolder() && !item.Expanded {
-			skipDepth = item.Depth // skip all children
+		if item.IsFolder() && !d.isExpanded(item.ID) {
+			skipDepth = item.Depth
 		}
 
 		visible = append(visible, item)
 	}
-
-	// Then apply search filter
-	if d.searchQuery == "" {
-		return visible
-	}
-	query := strings.ToLower(d.searchQuery)
-	var result []ListItem
-	for _, item := range visible {
-		if strings.Contains(strings.ToLower(item.Name), query) {
-			result = append(result, item)
-		}
-	}
-	return result
+	return visible
 }
 
 // AttachSessionID returns the session ID to attach to (set when user presses enter).
