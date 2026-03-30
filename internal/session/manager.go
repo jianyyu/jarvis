@@ -156,6 +156,10 @@ func (m *Manager) Attach(sessionID string) error {
 		return fmt.Errorf("get session: %w", err)
 	}
 
+	// Bump UpdatedAt so recently-attached sessions sort to top
+	sess.UpdatedAt = time.Now()
+	store.SaveSession(sess)
+
 	socketPath := sidecar.SocketPath(sess.ID)
 
 	// Check if sidecar is alive

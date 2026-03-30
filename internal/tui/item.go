@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	"jarvis/internal/model"
 )
 
@@ -26,6 +28,9 @@ type ListItem struct {
 	State    model.SidecarState
 	Detail   string
 	Age      string
+
+	// Sorting
+	UpdatedAt time.Time
 
 	// Folder-only fields
 	DoneCount  int
