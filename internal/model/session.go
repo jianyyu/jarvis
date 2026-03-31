@@ -35,6 +35,7 @@ type Session struct {
 	Status          SessionStatus `yaml:"status"`
 	ParentID        string        `yaml:"parent_id,omitempty"`
 	CWD             string        `yaml:"cwd"`
+	OriginalCWD     string        `yaml:"original_cwd,omitempty"`
 	Branches        []string      `yaml:"branches,omitempty"`
 	ClaudeSessionID string        `yaml:"claude_session_id,omitempty"`
 

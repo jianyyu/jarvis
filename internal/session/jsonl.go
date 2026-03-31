@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,42 +18,65 @@ func EncodeCWD(cwd string) string {
 	return nonAlphaNum.ReplaceAllString(cwd, "-")
 }
 
-// SessionJSONLPath returns the path to a Claude Code session JSONL file.
-func SessionJSONLPath(sessionID, cwd string) string {
+// projectDirs returns the candidate Claude project directories for a CWD.
+// If the CWD is inside a git worktree, it also includes the main repo root's project dir.
+func projectDirs(cwd string) []string {
 	home, _ := os.UserHomeDir()
-	encoded := EncodeCWD(cwd)
-	return filepath.Join(home, ".claude", "projects", encoded, sessionID+".jsonl")
+	base := filepath.Join(home, ".claude", "projects")
+	dirs := []string{filepath.Join(base, EncodeCWD(cwd))}
+
+	// If CWD is a worktree, also check the git repo root
+	cmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
+	if out, err := cmd.Output(); err == nil {
+		repoRoot := strings.TrimSpace(string(out))
+		if repoRoot != cwd {
+			dirs = append(dirs, filepath.Join(base, EncodeCWD(repoRoot)))
+		}
+	}
+	return dirs
 }
 
-// FindLatestSession scans the Claude project dir for the most recent valid session JSONL.
-func FindLatestSession(cwd string) string {
-	home, _ := os.UserHomeDir()
-	encoded := EncodeCWD(cwd)
-	dir := filepath.Join(home, ".claude", "projects", encoded)
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
+// SessionJSONLPath returns the path to a Claude Code session JSONL file.
+// It checks the CWD's project dir first, then falls back to the git repo root's project dir.
+func SessionJSONLPath(sessionID, cwd string) string {
+	for _, dir := range projectDirs(cwd) {
+		path := filepath.Join(dir, sessionID+".jsonl")
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
 	}
+	// Not found anywhere — return the primary path (for error reporting)
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "projects", EncodeCWD(cwd), sessionID+".jsonl")
+}
 
+// FindLatestSession scans the Claude project dirs for the most recent valid session JSONL.
+// Checks both the CWD's project dir and the git repo root's project dir for worktrees.
+func FindLatestSession(cwd string) string {
 	var bestID string
 	var bestTime time.Time
 
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".jsonl")
-		info, err := e.Info()
+	for _, dir := range projectDirs(cwd) {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(bestTime) {
-			// Verify it has real conversation data
-			if SessionIsValid(id, cwd) {
-				bestTime = info.ModTime()
-				bestID = id
+
+		for _, e := range entries {
+			name := e.Name()
+			if !strings.HasSuffix(name, ".jsonl") {
+				continue
+			}
+			id := strings.TrimSuffix(name, ".jsonl")
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(bestTime) {
+				if SessionIsValid(id, cwd) {
+					bestTime = info.ModTime()
+					bestID = id
+				}
 			}
 		}
 	}

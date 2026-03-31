@@ -312,17 +312,36 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 }
 
 // detectClaudeSessionID watches for new JSONL files to capture the Claude session ID.
+// Watches both the CWD's project dir and the git repo root's project dir (for worktrees).
 func (d *Daemon) detectClaudeSessionID() {
-	// Compute the Claude project dir for this CWD
-	encoded := nonAlphaNum.ReplaceAllString(d.cfg.CWD, "-")
 	home, _ := os.UserHomeDir()
-	projectDir := filepath.Join(home, ".claude", "projects", encoded)
+	base := filepath.Join(home, ".claude", "projects")
 
-	// Snapshot existing files
+	// Collect candidate project dirs (CWD + git repo root if different)
+	var projectDirs []string
+	encoded := nonAlphaNum.ReplaceAllString(d.cfg.CWD, "-")
+	projectDirs = append(projectDirs, filepath.Join(base, encoded))
+
+	cmd := exec.Command("git", "-C", d.cfg.CWD, "rev-parse", "--show-toplevel")
+	if out, err := cmd.Output(); err == nil {
+		repoRoot := string(out)
+		// Trim trailing newline
+		for len(repoRoot) > 0 && (repoRoot[len(repoRoot)-1] == '\n' || repoRoot[len(repoRoot)-1] == '\r') {
+			repoRoot = repoRoot[:len(repoRoot)-1]
+		}
+		if repoRoot != d.cfg.CWD {
+			repoEncoded := nonAlphaNum.ReplaceAllString(repoRoot, "-")
+			projectDirs = append(projectDirs, filepath.Join(base, repoEncoded))
+		}
+	}
+
+	// Snapshot existing files across all dirs
 	existingFiles := make(map[string]bool)
-	if entries, err := os.ReadDir(projectDir); err == nil {
-		for _, e := range entries {
-			existingFiles[e.Name()] = true
+	for _, dir := range projectDirs {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				existingFiles[dir+"/"+e.Name()] = true
+			}
 		}
 	}
 
@@ -335,24 +354,27 @@ func (d *Daemon) detectClaudeSessionID() {
 			return
 		}
 
-		entries, err := os.ReadDir(projectDir)
-		if err != nil {
-			continue
-		}
+		for _, dir := range projectDirs {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
 
-		for _, e := range entries {
-			name := e.Name()
-			if !existingFiles[name] && filepath.Ext(name) == ".jsonl" {
-				sessionID := name[:len(name)-len(".jsonl")]
-				log.Printf("sidecar: detected Claude session ID: %s", sessionID)
+			for _, e := range entries {
+				name := e.Name()
+				key := dir + "/" + name
+				if !existingFiles[key] && filepath.Ext(name) == ".jsonl" {
+					sessionID := name[:len(name)-len(".jsonl")]
+					log.Printf("sidecar: detected Claude session ID: %s", sessionID)
 
-				// Store it in session.yaml
-				if s, err := store.GetSession(d.cfg.SessionID); err == nil {
-					s.ClaudeSessionID = sessionID
-					s.UpdatedAt = time.Now()
-					store.SaveSession(s)
+					// Store it in session.yaml
+					if s, err := store.GetSession(d.cfg.SessionID); err == nil {
+						s.ClaudeSessionID = sessionID
+						s.UpdatedAt = time.Now()
+						store.SaveSession(s)
+					}
+					return
 				}
-				return
 			}
 		}
 	}

@@ -56,13 +56,14 @@ func (m *Manager) Spawn(name string, cwd string, claudeArgs []string) (*model.Se
 
 	now := time.Now()
 	sess := &model.Session{
-		ID:        model.NewID(),
-		Type:      "session",
-		Name:      name,
-		Status:    model.StatusActive,
-		CWD:       cwd,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          model.NewID(),
+		Type:        "session",
+		Name:        name,
+		Status:      model.StatusActive,
+		CWD:         cwd,
+		OriginalCWD: cwd,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	if err := store.SaveSession(sess); err != nil {
@@ -187,12 +188,19 @@ func (m *Manager) Resume(sess *model.Session) error {
 	// Build resume command
 	var claudeArgs []string
 
-	// Try stored session ID first
-	claudeSessionID := sess.ClaudeSessionID
+	// Determine the CWD to launch Claude from.
+	// If CWD was changed (e.g. by jarvis init to a worktree), launch from
+	// the original CWD so claude --resume can find the JSONL, and inject a
+	// system prompt telling Claude to work in the worktree.
+	launchCWD := sess.CWD
+	if sess.OriginalCWD != "" && sess.OriginalCWD != sess.CWD {
+		launchCWD = sess.OriginalCWD
+	}
 
-	// If not stored, scan disk for the latest session in this CWD
-	if claudeSessionID == "" || !SessionIsValid(claudeSessionID, sess.CWD) {
-		claudeSessionID = FindLatestSession(sess.CWD)
+	// Try stored session ID first, validating against launchCWD (where the JSONL lives)
+	claudeSessionID := sess.ClaudeSessionID
+	if claudeSessionID == "" || !SessionIsValid(claudeSessionID, launchCWD) {
+		claudeSessionID = FindLatestSession(launchCWD)
 	}
 
 	if claudeSessionID != "" {
@@ -204,15 +212,31 @@ func (m *Manager) Resume(sess *model.Session) error {
 		claudeArgs = []string{"claude"}
 	}
 
+	// If launching from a different CWD than the session's worktree,
+	// tell Claude to work in the worktree directory.
+	// Quote the prompt value so splitCommand in pty.go keeps it as one arg.
+	if launchCWD != sess.CWD {
+		prompt := fmt.Sprintf("Your working directory for this session is %s — cd there before making any changes.", sess.CWD)
+		claudeArgs = append(claudeArgs,
+			"--append-system-prompt",
+			fmt.Sprintf("'%s'", prompt))
+	}
+
 	claudeCmd := strings.Join(claudeArgs, " ")
 
+	// Temporarily override CWD for sidecar launch
+	origCWD := sess.CWD
+	sess.CWD = launchCWD
 	sess.Status = model.StatusActive
 	sess.UpdatedAt = time.Now()
 	if err := store.SaveSession(sess); err != nil {
 		return err
 	}
-
-	return m.spawnSidecar(sess, claudeCmd)
+	err := m.spawnSidecar(sess, claudeCmd)
+	// Restore the worktree CWD in the session
+	sess.CWD = origCWD
+	store.SaveSession(sess)
+	return err
 }
 
 // GetStatus returns the status of a session (live from sidecar or derived).
