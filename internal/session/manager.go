@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,15 +198,24 @@ func (m *Manager) Resume(sess *model.Session) error {
 		launchCWD = sess.OriginalCWD
 	}
 
-	// Try stored session ID first, validating against launchCWD (where the JSONL lives)
+	// Try stored session ID first, validating against launchCWD (where the JSONL lives).
+	// Only fall back to FindLatestSession if no session ID was ever stored.
+	// If a stored ID fails validation, start fresh rather than risk resuming
+	// a different session (multiple sessions share the same project dir).
 	claudeSessionID := sess.ClaudeSessionID
-	if claudeSessionID == "" || !SessionIsValid(claudeSessionID, launchCWD) {
+	if claudeSessionID != "" {
+		if !SessionIsValid(claudeSessionID, launchCWD) {
+			log.Printf("session: stored Claude session %s is invalid, starting fresh", claudeSessionID)
+			claudeSessionID = ""
+		}
+	} else {
+		// No stored ID — this is likely the first resume after spawn.
+		// Try to find the session from disk.
 		claudeSessionID = FindLatestSession(launchCWD)
 	}
 
 	if claudeSessionID != "" {
 		claudeArgs = []string{"claude", "--resume", claudeSessionID}
-		// Store it for next time
 		sess.ClaudeSessionID = claudeSessionID
 	} else {
 		// Can't resume — start fresh
