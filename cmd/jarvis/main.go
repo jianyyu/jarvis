@@ -374,7 +374,6 @@ var initCmd = &cobra.Command{
 
 		// Generate branch name from title
 		slug := slugify(title)
-		branch := slug
 
 		// Find git repo root from session CWD
 		repoRoot := sess.CWD
@@ -390,17 +389,14 @@ var initCmd = &cobra.Command{
 		// Check if worktree already exists
 		if _, err := os.Stat(worktreePath); err == nil {
 			fmt.Printf("Worktree already exists at %s\n", worktreePath)
-			fmt.Printf("Branch: %s\n", branch)
 			sess.CWD = worktreePath
 			return store.SaveSession(sess)
 		}
 
-		// Create the worktree with a new branch
-		wtCmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "-b", branch, worktreePath)
-		wtCmd.Stdout = os.Stdout
-		wtCmd.Stderr = os.Stderr
-		if err := wtCmd.Run(); err != nil {
-			return fmt.Errorf("create worktree: %w", err)
+		// Try git stack first, fall back to plain worktree
+		branch, useStack := createBranchAndWorktree(repoRoot, slug, worktreePath)
+		if branch == "" {
+			return fmt.Errorf("failed to create branch and worktree")
 		}
 
 		sess.CWD = worktreePath
@@ -411,9 +407,53 @@ var initCmd = &cobra.Command{
 		fmt.Printf("Session: %s\n", title)
 		fmt.Printf("Worktree: %s\n", worktreePath)
 		fmt.Printf("Branch: %s\n", branch)
+		if useStack {
+			fmt.Println("Mode: git stack (use 'git stack push' to create PR)")
+		} else {
+			fmt.Println("Mode: plain branch (git stack not available)")
+		}
 		fmt.Println("\nNote: subsequent code changes should be made in the new worktree directory.")
 		return nil
 	},
+}
+
+// createBranchAndWorktree tries git stack first, falls back to plain git worktree.
+// Returns (branch name, whether git stack was used).
+func createBranchAndWorktree(repoRoot, slug, worktreePath string) (string, bool) {
+	// Check if git stack is available
+	checkCmd := exec.Command("git", "-C", repoRoot, "stack", "--version")
+	if err := checkCmd.Run(); err == nil {
+		// git stack is available — create a stacked branch (no checkout in main repo)
+		stackCmd := exec.Command("git", "-C", repoRoot, "stack", "create", slug, "--on", "master", "--no-checkout")
+		stackCmd.Stdout = os.Stdout
+		stackCmd.Stderr = os.Stderr
+		if err := stackCmd.Run(); err == nil {
+			stackBranch := "stack/" + slug
+			// Create worktree pointing to the existing stacked branch
+			wtCmd := exec.Command("git", "-C", repoRoot, "worktree", "add", worktreePath, stackBranch)
+			wtCmd.Stdout = os.Stdout
+			wtCmd.Stderr = os.Stderr
+			if err := wtCmd.Run(); err == nil {
+				return stackBranch, true
+			}
+			fmt.Printf("Warning: worktree creation failed for stacked branch, cleaning up: %v\n", err)
+			// Clean up the stacked branch since worktree failed
+			cleanCmd := exec.Command("git", "-C", repoRoot, "stack", "remove", slug)
+			cleanCmd.Run()
+		} else {
+			fmt.Printf("Warning: git stack create failed, falling back to plain branch: %v\n", err)
+		}
+	}
+
+	// Fallback: plain git worktree with a new branch
+	wtCmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "-b", slug, worktreePath)
+	wtCmd.Stdout = os.Stdout
+	wtCmd.Stderr = os.Stderr
+	if err := wtCmd.Run(); err != nil {
+		fmt.Printf("Error: failed to create worktree: %v\n", err)
+		return "", false
+	}
+	return slug, false
 }
 
 // slugify converts a title to a branch-safe slug.
