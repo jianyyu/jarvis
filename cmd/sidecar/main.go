@@ -14,6 +14,7 @@ func main() {
 	sessionID := flag.String("session-id", "", "session ID")
 	cwd := flag.String("cwd", ".", "working directory")
 	claudeCmd := flag.String("claude-cmd", "claude", "command to run")
+	claudeSessionID := flag.String("claude-session-id", "", "known Claude session ID (skip detection)")
 	cols := flag.Int("cols", 80, "terminal columns")
 	rows := flag.Int("rows", 24, "terminal rows")
 	flag.Parse()
@@ -32,12 +33,13 @@ func main() {
 	log.SetOutput(logFile)
 
 	cfg := sidecar.DaemonConfig{
-		SessionID: *sessionID,
-		CWD:       *cwd,
-		ClaudeCmd: *claudeCmd,
-		Env:       os.Environ(),
-		Cols:      uint16(*cols),
-		Rows:      uint16(*rows),
+		SessionID:       *sessionID,
+		CWD:             *cwd,
+		ClaudeCmd:       *claudeCmd,
+		ClaudeSessionID: *claudeSessionID,
+		Env:             os.Environ(),
+		Cols:            uint16(*cols),
+		Rows:            uint16(*rows),
 	}
 
 	d := sidecar.NewDaemon(cfg)

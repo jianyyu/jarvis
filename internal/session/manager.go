@@ -97,13 +97,19 @@ func (m *Manager) spawnSidecar(sess *model.Session, claudeCmd string) error {
 		}
 	}
 
-	cmd := exec.Command(sidecarBin,
+	args := []string{
 		"--session-id", sess.ID,
 		"--cwd", sess.CWD,
 		"--claude-cmd", claudeCmd,
 		"--cols", fmt.Sprintf("%d", cols),
 		"--rows", fmt.Sprintf("%d", rows),
-	)
+	}
+	// Pass known Claude session ID so the sidecar can skip JSONL detection
+	if sess.ClaudeSessionID != "" {
+		args = append(args, "--claude-session-id", sess.ClaudeSessionID)
+	}
+
+	cmd := exec.Command(sidecarBin, args...)
 
 	// Set environment
 	env := os.Environ()
@@ -198,20 +204,19 @@ func (m *Manager) Resume(sess *model.Session) error {
 		launchCWD = sess.OriginalCWD
 	}
 
-	// Try stored session ID first, validating against launchCWD (where the JSONL lives).
-	// Only fall back to FindLatestSession if no session ID was ever stored.
-	// If a stored ID fails validation, start fresh rather than risk resuming
-	// a different session (multiple sessions share the same project dir).
+	// Use stored session ID if valid. If no stored ID exists or it's invalid,
+	// start fresh rather than guessing — FindLatestSession is unreliable when
+	// multiple jarvis sessions share the same project directory.
 	claudeSessionID := sess.ClaudeSessionID
 	if claudeSessionID != "" {
-		if !SessionIsValid(claudeSessionID, launchCWD) {
+		// Check both launchCWD and session CWD (worktree) since the JSONL
+		// could live under either project directory.
+		if !SessionIsValid(claudeSessionID, launchCWD) && !SessionIsValid(claudeSessionID, sess.CWD) {
 			log.Printf("session: stored Claude session %s is invalid, starting fresh", claudeSessionID)
 			claudeSessionID = ""
 		}
 	} else {
-		// No stored ID — this is likely the first resume after spawn.
-		// Try to find the session from disk.
-		claudeSessionID = FindLatestSession(launchCWD)
+		log.Printf("session: no stored Claude session ID, starting fresh")
 	}
 
 	if claudeSessionID != "" {

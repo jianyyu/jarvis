@@ -23,12 +23,13 @@ import (
 
 // DaemonConfig holds the configuration for a sidecar daemon.
 type DaemonConfig struct {
-	SessionID string
-	CWD       string
-	ClaudeCmd string
-	Env       []string
-	Cols      uint16
-	Rows      uint16
+	SessionID       string
+	CWD             string
+	ClaudeCmd       string
+	ClaudeSessionID string // If non-empty, skip JSONL detection (already known from resume)
+	Env             []string
+	Cols            uint16
+	Rows            uint16
 }
 
 // Daemon manages a Claude Code session with PTY and IPC.
@@ -77,6 +78,13 @@ func (d *Daemon) Run() error {
 	// Clean up stale socket
 	os.Remove(d.socketPath)
 
+	// Snapshot existing JSONL files BEFORE starting Claude to avoid race
+	// where Claude creates the file before the detection goroutine runs.
+	var preSnapshot map[string]bool
+	if d.cfg.ClaudeSessionID == "" {
+		preSnapshot = d.snapshotProjectFiles()
+	}
+
 	// Start Claude process with PTY
 	master, cmd, err := StartProcessWithPTY(d.cfg.ClaudeCmd, d.cfg.CWD, d.cfg.Env, d.cfg.Cols, d.cfg.Rows)
 	if err != nil {
@@ -88,8 +96,13 @@ func (d *Daemon) Run() error {
 
 	log.Printf("sidecar: started process PID %d for session %s", cmd.Process.Pid, d.cfg.SessionID)
 
-	// Detect Claude session ID by watching for new JSONL files
-	go d.detectClaudeSessionID()
+	// Detect Claude session ID by watching for new JSONL files.
+	// Skip if we already know the session ID (e.g. from --resume).
+	if d.cfg.ClaudeSessionID != "" {
+		log.Printf("sidecar: Claude session ID already known: %s", d.cfg.ClaudeSessionID)
+	} else {
+		go d.detectClaudeSessionID(preSnapshot)
+	}
 
 	// Start socket listener
 	listener, err := net.Listen("unix", d.socketPath)
@@ -311,50 +324,60 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	}
 }
 
-// detectClaudeSessionID watches for new JSONL files to capture the Claude session ID.
-// Watches both the CWD's project dir and the git repo root's project dir (for worktrees).
-func (d *Daemon) detectClaudeSessionID() {
+// projectDirsForCWD returns candidate Claude project directories for the daemon's CWD.
+func (d *Daemon) projectDirsForCWD() []string {
 	home, _ := os.UserHomeDir()
 	base := filepath.Join(home, ".claude", "projects")
 
-	// Collect candidate project dirs (CWD + git repo root if different)
-	var projectDirs []string
+	var dirs []string
 	encoded := nonAlphaNum.ReplaceAllString(d.cfg.CWD, "-")
-	projectDirs = append(projectDirs, filepath.Join(base, encoded))
+	dirs = append(dirs, filepath.Join(base, encoded))
 
 	cmd := exec.Command("git", "-C", d.cfg.CWD, "rev-parse", "--show-toplevel")
 	if out, err := cmd.Output(); err == nil {
 		repoRoot := string(out)
-		// Trim trailing newline
 		for len(repoRoot) > 0 && (repoRoot[len(repoRoot)-1] == '\n' || repoRoot[len(repoRoot)-1] == '\r') {
 			repoRoot = repoRoot[:len(repoRoot)-1]
 		}
 		if repoRoot != d.cfg.CWD {
 			repoEncoded := nonAlphaNum.ReplaceAllString(repoRoot, "-")
-			projectDirs = append(projectDirs, filepath.Join(base, repoEncoded))
+			dirs = append(dirs, filepath.Join(base, repoEncoded))
 		}
 	}
+	return dirs
+}
 
-	// Snapshot existing files across all dirs
-	existingFiles := make(map[string]bool)
-	for _, dir := range projectDirs {
+// snapshotProjectFiles returns a set of all current JSONL-related entries in the project dirs.
+// Must be called BEFORE starting Claude to avoid missing the new JSONL file.
+func (d *Daemon) snapshotProjectFiles() map[string]bool {
+	existing := make(map[string]bool)
+	for _, dir := range d.projectDirsForCWD() {
 		if entries, err := os.ReadDir(dir); err == nil {
 			for _, e := range entries {
-				existingFiles[dir+"/"+e.Name()] = true
+				existing[dir+"/"+e.Name()] = true
 			}
 		}
 	}
+	return existing
+}
 
-	// Poll for new JSONL file (check every 1s for up to 30s)
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
+// detectClaudeSessionID watches for new JSONL files to capture the Claude session ID.
+// The existingFiles snapshot must be taken BEFORE starting Claude to avoid a race.
+func (d *Daemon) detectClaudeSessionID(existingFiles map[string]bool) {
+	dirs := d.projectDirsForCWD()
+
+	// Poll for new JSONL file (check every 2s for up to 120s).
+	// Claude Code creates the JSONL only after the first user interaction,
+	// so we need a generous timeout.
+	for i := 0; i < 60; i++ {
+		time.Sleep(2 * time.Second)
 
 		state := d.state.Load().(model.SidecarState)
 		if state == model.StateExited {
 			return
 		}
 
-		for _, dir := range projectDirs {
+		for _, dir := range dirs {
 			entries, err := os.ReadDir(dir)
 			if err != nil {
 				continue
@@ -378,7 +401,7 @@ func (d *Daemon) detectClaudeSessionID() {
 			}
 		}
 	}
-	log.Printf("sidecar: could not detect Claude session ID within 30s")
+	log.Printf("sidecar: could not detect Claude session ID within 120s")
 }
 
 var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]`)
