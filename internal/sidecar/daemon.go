@@ -9,12 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"jarvis/internal/model"
+	"jarvis/internal/paths"
 	"jarvis/internal/protocol"
 	"jarvis/internal/store"
 
@@ -63,9 +63,9 @@ func NewDaemon(cfg DaemonConfig) *Daemon {
 }
 
 // SocketPath returns the Unix socket path for a session.
+// It respects the JARVIS_HOME environment variable via store.JarvisHome().
 func SocketPath(sessionID string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".jarvis", "sockets", sessionID+".sock")
+	return filepath.Join(store.JarvisHome(), "sockets", sessionID+".sock")
 }
 
 // Run starts the sidecar daemon. Blocks until the Claude process exits.
@@ -325,26 +325,9 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 }
 
 // projectDirsForCWD returns candidate Claude project directories for the daemon's CWD.
+// Delegates to the shared paths package.
 func (d *Daemon) projectDirsForCWD() []string {
-	home, _ := os.UserHomeDir()
-	base := filepath.Join(home, ".claude", "projects")
-
-	var dirs []string
-	encoded := nonAlphaNum.ReplaceAllString(d.cfg.CWD, "-")
-	dirs = append(dirs, filepath.Join(base, encoded))
-
-	cmd := exec.Command("git", "-C", d.cfg.CWD, "rev-parse", "--show-toplevel")
-	if out, err := cmd.Output(); err == nil {
-		repoRoot := string(out)
-		for len(repoRoot) > 0 && (repoRoot[len(repoRoot)-1] == '\n' || repoRoot[len(repoRoot)-1] == '\r') {
-			repoRoot = repoRoot[:len(repoRoot)-1]
-		}
-		if repoRoot != d.cfg.CWD {
-			repoEncoded := nonAlphaNum.ReplaceAllString(repoRoot, "-")
-			dirs = append(dirs, filepath.Join(base, repoEncoded))
-		}
-	}
-	return dirs
+	return paths.ProjectDirs(d.cfg.CWD)
 }
 
 // snapshotProjectFiles returns a set of all current JSONL-related entries in the project dirs.
@@ -403,8 +386,6 @@ func (d *Daemon) detectClaudeSessionID(existingFiles map[string]bool) {
 	}
 	log.Printf("sidecar: could not detect Claude session ID within 120s")
 }
-
-var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
 func (d *Daemon) idleDetectionLoop() {
 	ticker := time.NewTicker(2 * time.Second)
