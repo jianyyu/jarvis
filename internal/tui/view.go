@@ -80,7 +80,7 @@ func (d Dashboard) View() string {
 	case ModeInput:
 		b.WriteString("\n  " + inputStyle.Render(d.cmdPrompt) + d.cmdInput.View())
 	default:
-		help := "  [enter] attach  [n]ew  [c]hat  [f]older  [r]ename  [d]one  [x] delete  [/]search  [q]uit"
+		help := "  [enter] attach  [a]pprove  [n]ew  [c]hat  [f]older  [r]ename  [d]one  [x] delete  [/]search  [q]uit"
 		b.WriteString(helpStyle.Render(help))
 	}
 

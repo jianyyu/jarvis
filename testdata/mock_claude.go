@@ -57,6 +57,21 @@ func main() {
 					fmt.Println("Command denied.")
 				}
 			}
+		case line == "read":
+			fmt.Println("I need to read a file:")
+			fmt.Println("  src/main.go")
+			fmt.Println("")
+			fmt.Println("Allow Read? (y/n)")
+			if scanner.Scan() {
+				resp := strings.TrimSpace(scanner.Text())
+				if resp == "y" {
+					fmt.Println("Reading file...")
+					time.Sleep(200 * time.Millisecond)
+					fmt.Println("File read successfully.")
+				} else {
+					fmt.Println("Read denied.")
+				}
+			}
 		case line == "work":
 			fmt.Println("Working on something...")
 			for i := 0; i < 5; i++ {
