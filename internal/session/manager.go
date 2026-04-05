@@ -212,9 +212,10 @@ func (m *Manager) Resume(sess *model.Session) error {
 
 	if claudeSessionID != "" {
 		claudeArgs = []string{"claude", "--resume", claudeSessionID}
-		sess.ClaudeSessionID = claudeSessionID
 	} else {
-		// Can't resume — start fresh
+		// Can't resume — start fresh. Clear the stale ID so it isn't
+		// persisted back to disk.
+		sess.ClaudeSessionID = ""
 		claudeArgs = []string{"claude"}
 	}
 

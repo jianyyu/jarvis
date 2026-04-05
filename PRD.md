@@ -641,97 +641,77 @@ When no session is attached, the dashboard takes the full screen:
   [enter] attach  [a]pprove  [/]search  [n]ew  [q]uit
 ```
 
-### Ideation
+### Idea Vault
 
-Ideas are lightweight, unstructured captures — things that pop into your head that aren't ready to be tasks yet.
+The idea vault is a **structured file-based knowledge store** — a place to capture ideas, startup concepts, things you see online, and future projects. The key property: every idea is a plain YAML file under `~/.jarvis/ideas/`, readable by any Claude Code session in any worktree.
+
+This is not a workflow system. No promotion, no AI processing, no state machine. Just structured storage that's always accessible.
+
+**Capturing ideas:**
 
 ```
-  You: /idea we should add rate limiting to the public API endpoints.
-       maybe token bucket per user. look at how stripe does it.
+  > /idea we should add rate limiting to the public API endpoints.
+         maybe token bucket per user. look at how stripe does it.
 
   Jarvis: 💡 Idea saved: "Rate limiting for public API"
-          Tags: #api #rate-limiting #security
-```
+          Tags: #api #rate-limiting
 
-Ideas live in a separate space from tasks — no worktree, no session, no status tracking. Just a scratchpad.
+  > /idea rate limiting — also need per-IP for unauth endpoints
 
-**Idea lifecycle:**
-
-```
-  💡 capture → 💡 refine → 📁 promote to project → 📋 break into tasks
+  Jarvis: Updated "Rate limiting for public API":
+          + also need per-IP for unauth endpoints
 ```
 
 **Browsing ideas:**
 
 ```
-  You: /ideas
+  > /ideas
 
   Jarvis:
     💡 Rate limiting for public API                    2d ago
        Token bucket per user. Look at how stripe does it.
-       Tags: #api #rate-limiting #security
+       Also need per-IP for unauth endpoints.
+       Tags: #api #rate-limiting
 
-    💡 Migrate tests from unittest to pytest           1w ago
-       Start with auth module. parameterize the token tests.
-       Tags: #testing #tech-debt
+    💡 Startup: AI-powered code review SaaS            1w ago
+       Sell to mid-size teams. Differentiate on context...
+       Tags: #startup #saas
 
     💡 Auto-generate API docs from proto definitions   2w ago
        Tags: #docs #proto
+
+  > /ideas #startup                                   (filter by tag)
 ```
 
-**Refining an idea** — you can add notes over time, and the main session helps you think:
+**Using ideas from any session:**
+
+Any Claude Code session can read the idea vault directly:
 
 ```
-  You: /idea rate limiting — actually we also need per-IP limiting
-       for unauthenticated endpoints. and we need a bypass for
-       internal services.
+  You (inside a Claude Code session):
+    "Read ~/.jarvis/ideas/ and help me build a POC for the rate limiting idea"
 
-  Jarvis: Updated "Rate limiting for public API":
-          + Per-IP limiting for unauthenticated endpoints
-          + Bypass mechanism for internal services
-          Added tags: #internal-services
+  Claude: [reads the YAML, has full context, starts building]
 ```
 
-**Promoting to a project:**
-
-```
-  You: the rate limiting idea is ready, let's make it a project
-
-  Jarvis: Promoting "Rate limiting for public API" to a project.
-
-    Based on your notes, here's a suggested task breakdown:
-      📁 Rate Limiting for Public API
-        📋 Research: audit current endpoints, check stripe's approach
-        📋 Design: token bucket implementation, per-IP vs per-user
-        📋 Implement: middleware + configuration
-        📋 Internal bypass: service-to-service auth exemption
-        📋 Load testing: verify limits under production traffic
-
-    Want me to create this project with these subtasks? (y/edit/n)
-
-  You: y
-
-  Jarvis: Created project with 5 subtasks. Idea archived.
-          Want me to start working on the research task?
-```
+This is the whole point — structured data that's always available, from any session, in any worktree, on any machine (as long as `~/.jarvis/` is on the persisted volume).
 
 **Idea storage:**
 
-```
-~/.jarvis/
-  ideas/
-    <idea-id>.yaml
-      id: "i1a2b3c4"
-      title: "Rate limiting for public API"
-      notes:
-        - text: "token bucket per user. look at how stripe does it."
-          added_at: "2026-03-26T14:00:00Z"
-        - text: "per-IP for unauth. bypass for internal."
-          added_at: "2026-03-28T09:00:00Z"
-      tags: ["api", "rate-limiting", "security", "internal-services"]
-      status: active          # active | promoted | discarded
-      promoted_to: null       # task ID if promoted
-      created_at: "2026-03-26T14:00:00Z"
+```yaml
+# ~/.jarvis/ideas/i1a2b3c4.yaml
+id: "i1a2b3c4"
+title: "Rate limiting for public API"
+notes:
+  - text: "token bucket per user. look at how stripe does it."
+    added_at: "2026-03-26T14:00:00Z"
+  - text: "per-IP for unauth. bypass for internal services."
+    added_at: "2026-03-28T09:00:00Z"
+tags: ["api", "rate-limiting"]
+links:
+  - "https://stripe.com/docs/rate-limiting"
+status: active       # active | archived
+created_at: "2026-03-26T14:00:00Z"
 ```
 
 ### Outbox Review
@@ -1127,77 +1107,158 @@ contexts:
 
 ## Implementation Phases
 
-### Phase 1: Sidecar + Attach/Detach
+### Phase 1: Sidecar + Attach/Detach ✅ DONE
 
-- `sidecar.py` — daemon process with PTY + Unix socket
-- `protocol.py` — JSON message types and serialization
-- Update `launcher.py` — spawn sidecar instead of `subprocess.run()`
-- Basic attach/detach — raw PTY passthrough mode
+- Sidecar daemon process with PTY + Unix socket (Go, `internal/sidecar/`)
+- JSON-over-socket protocol (`internal/protocol/`)
+- Session manager — spawn sidecar instead of blocking subprocess
+- Attach/detach — raw PTY passthrough with Ctrl-\ detach
 - Sidecar state persistence — periodically write status to session.yaml
 - Resume after instance restart — detect dead sidecars, derive status from JSONL, `claude --resume`
+- Ring buffer (10K lines) for attach catch-up
 
 **Outcome:** Sessions survive jarvis exit. Sessions recoverable after instance restart via `claude --resume`. Single session works end-to-end through sidecar.
 
-### Phase 2: Multi-Session Dashboard + Search + Status
+### Phase 2: Multi-Session Dashboard ✅ DONE
 
-- `dashboard.py` — TUI showing folder tree + session statuses
-- Folder management — create, rename, move, archive
+- Bubble Tea TUI dashboard (`internal/tui/`) — folder tree + session statuses
+- Folder management — create, rename, delete, nest
 - Live status polling — periodic `get_status` to all active sidecars
 - Suspended status — read JSONL tail for dead sidecars
 - `⚠ needs attention` — float blocked sessions to top
-- Search — filter across folders, sessions, and ideas by name/status
+- Search — filter across folders and sessions by name
 - Session switching — navigate and attach from dashboard
+- Worktree + branch creation via `jarvis init` (git-stack with fallback)
 
 **Outcome:** User can see all sessions at a glance, find what needs attention, search, and switch between sessions. The core "commander" loop works.
 
-### Phase 3: External System Integration
+### Phase 3: Auto-Approve & Intervention Policies
 
-- `context_registry.py` — map external contexts to sessions, dedup
-- `watchers/github_watcher.py` — poll for review requests, PR updates
-- `watchers/slack_watcher.py` — poll for DMs, mentions, thread updates
-- `watchers/pd_watcher.py` — poll for assigned incidents
-- `watchers/jira_watcher.py` — poll for ticket assignments/updates
+> **Why this is next:** The biggest daily pain point is sessions blocked on tool-approval prompts. The sidecar already detects approval patterns (`DetectState` in `internal/sidecar/status.go`); this phase adds the ability to auto-respond based on configurable policies. Highest ROI, lowest implementation cost.
+
+- Policy engine — parse auto-approve rules from `~/.jarvis/config.yaml`
+- Sidecar auto-respond — when an approval prompt matches a policy, send `y\n` automatically
+- Deny-list patterns — certain commands (rm, drop, force push) always require human approval
+- Quick-approve from dashboard — press `a` on a blocked session to approve without attaching
+- Notification on deny-list match — make it obvious when a session is blocked on something dangerous
+- Audit log — record every auto-approve and manual approve decision
+
+```yaml
+# ~/.jarvis/config.yaml
+policies:
+  auto_approve:
+    - tool: [Read, Grep, Glob, WebFetch, WebSearch]
+      action: approve
+    - tool: Bash
+      command_matches: "npm install|npm run|pytest|make|cargo|go test|go build"
+      action: approve
+    - tool: Bash
+      command_matches: "rm|drop|delete|force|--force"
+      action: ask_human
+    - tool: Edit
+      action: approve
+    - tool: Write
+      action: approve
+```
+
+**Outcome:** Routine prompts auto-handled. Dangerous operations surfaced for human decision. Sessions run unattended for much longer.
+
+**Estimated effort:** ~800 lines
+
+### Phase 4: Idea Vault
+
+> **Why this comes early:** Simple to build, immediately useful. The idea vault is just structured storage — YAML files under `~/.jarvis/ideas/` that any Claude Code session can read. No AI processing, no promotion workflows. You capture ideas from anywhere; you use them from any session.
+
+- `/idea` command — capture a new idea from the CLI or dashboard
+- `/ideas` command — list all ideas
+- YAML storage — `~/.jarvis/ideas/<id>.yaml` with title, notes, tags, links, created_at
+- Append notes — `/idea <title> — additional note` appends to an existing idea
+- Tag-based filtering — `/ideas #startup` or `/ideas #tech-debt`
+- Accessible from any session — Claude Code can read `~/.jarvis/ideas/*.yaml` via system prompt or direct file read
+
+The key insight: this is a **file-based knowledge store**, not a workflow system. Any Claude Code session in any worktree can `cat ~/.jarvis/ideas/*.yaml` to get context. That's the whole point — structured data that's always available.
+
+```yaml
+# ~/.jarvis/ideas/i1a2b3c4.yaml
+id: "i1a2b3c4"
+title: "Rate limiting for public API"
+notes:
+  - text: "token bucket per user. look at how stripe does it."
+    added_at: "2026-03-26T14:00:00Z"
+  - text: "per-IP for unauth endpoints. bypass for internal services."
+    added_at: "2026-03-28T09:00:00Z"
+tags: ["api", "rate-limiting", "startup-idea"]
+links:
+  - "https://stripe.com/docs/rate-limiting"
+status: active       # active | archived
+created_at: "2026-03-26T14:00:00Z"
+```
+
+**Outcome:** Ideas captured and structured. Accessible from any Claude Code session as plain files. No ideas lost.
+
+**Estimated effort:** ~400 lines
+
+### Phase 5: External System Integration
+
+> **Why after auto-approve:** Watchers create sessions automatically, and those sessions will hit approval prompts. Auto-approve (Phase 3) must be in place first, otherwise auto-created sessions just pile up as "blocked" with nobody watching.
+
+- `internal/watcher/` — background goroutines that poll external systems
+- Context registry — `~/.jarvis/context_registry.yaml` maps external refs to session IDs (dedup)
 - Routing rules in config — deterministic placement into folders
-- Prompt templates per trigger type
+- Prompt templates per trigger type — what instructions each auto-created session gets
+
+**Watchers:**
+
+| Watcher | Source | Trigger | Action |
+|---------|--------|---------|--------|
+| `github` | GitHub API / MCP | Review request assigned | Create session: review PR, prepare comments |
+| `slack` | Slack API / MCP | DM or mention | Create or route: analyze context, prepare response |
+| `pagerduty` | PagerDuty API / MCP | Incident assigned | Create session: investigate, prepare response |
+| `jira` | Jira API / MCP | Ticket assigned/updated | Create or route: analyze, prepare response |
+
+Watchers run as goroutines inside the jarvis process. They die when jarvis exits, restart when jarvis launches. The context registry (on disk) prevents duplicate session creation across restarts.
 
 **Outcome:** Jarvis automatically creates sessions in response to external events. No more manual checking of Slack/GitHub/PD/Jira. Existing sessions receive follow-up context.
 
-### Phase 4: Outbox
+**Estimated effort:** ~2,700 lines (registry 400 + 4 watchers 2000 + routing 300)
 
-- `outbox.py` — store prepared responses per session
+### Phase 6: Outbox
+
+> **Why after watchers:** The outbox is most useful when sessions are auto-created by watchers. A PR review session auto-created by the GitHub watcher produces draft comments → outbox → you review and send. Without watchers, the outbox is just a manual "save draft" feature.
+
+- Outbox store — prepared responses per session (YAML/JSON under `~/.jarvis/sessions/<id>/outbox/`)
 - Outbox TUI — review, edit, send, discard
-- GitHub integration — post approved comments via API/MCP
-- Slack integration — send approved messages via API/MCP
+- GitHub integration — post approved comments via MCP
+- Slack integration — send approved messages via MCP
 - Audit log — record what was sent, when, original vs. edited
 
 **Outcome:** Jarvis prepares responses; human reviews and sends. Full audit trail. No external action without approval.
 
-### Phase 5: Intervention & Policies
+**Estimated effort:** ~1,900 lines (store 600 + TUI 800 + integrations 500)
 
-- Pattern detection in sidecar — identify permission prompts from PTY output
-- Auto-approve policies in config
-- Quick-approve from dashboard — approve without attaching
-- Hook-based structured events as additional signal
+### Phase 7: Polish & UX
 
-**Outcome:** Routine prompts auto-handled. Non-routine prompts surfaced for human decision.
+- Session overlay switcher — Ctrl-J popup to switch sessions without detaching (like tmux `Ctrl-b s`)
+- Session logging — persist all PTY output to file (not just ring buffer)
+- Health monitoring — detect stuck/hung sessions (no output for 10+ minutes)
+- Graceful shutdown — signal all sidecars on `jarvis stop`
+- Archiving — hide done sessions, clean up worktrees for merged branches
+- Dashboard slash commands — `/approve`, `/archive`, `/move` from the smart bar
 
-### Phase 6: Smart Bar + Ideas
+**Outcome:** Polished daily-driver experience. No rough edges.
 
-- Smart bar — slash commands for all operations
-- Natural language mode — thin Claude call for ambiguous requests
-- Idea capture — `/idea` to save, `/ideas` to browse
-- Idea promotion — promote idea to folder + sessions
-- Context handoff — prepare context bundles when spawning sessions
+**Estimated effort:** ~1,400 lines
 
-**Outcome:** Full commander experience. Natural language task dispatch. Idea backlog for capturing and maturing future work.
+### Projected Code Size
 
-### Phase 7: Polish
-
-- Scrollback buffer in sidecar
-- Session logging (persist all output to file)
-- Health monitoring (detect stuck/hung sessions)
-- Graceful shutdown (signal all sidecars on `jarvis stop`)
-- Transport agnosticism — support headless mode alongside PTY
+| Phase | New Lines | Cumulative |
+|-------|-----------|------------|
+| Phase 1+2 (done) | 3,000 | 3,000 |
+| Phase 3: Auto-approve | ~800 | ~3,800 |
+| Phase 4: Idea Vault | ~400 | ~4,200 |
+| Phase 5: Watchers | ~2,700 | ~6,900 |
+| Phase 6: Outbox | ~1,900 | ~8,800 |
+| Phase 7: Polish | ~1,400 | **~10,200** |
 
 ---
 

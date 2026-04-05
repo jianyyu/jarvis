@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"jarvis/internal/config"
 	"jarvis/internal/model"
 	"jarvis/internal/paths"
 	"jarvis/internal/protocol"
@@ -35,6 +36,7 @@ type DaemonConfig struct {
 // Daemon manages a Claude Code session with PTY and IPC.
 type Daemon struct {
 	cfg        DaemonConfig
+	policies   []config.ApprovalRule
 	socketPath string
 	master     *os.File
 	cmd        *exec.Cmd
@@ -45,14 +47,24 @@ type Daemon struct {
 	detail      atomic.Value // string
 	lastOutputT atomic.Value // time.Time
 
-	attachMu     sync.Mutex
-	attachedConn net.Conn
+	attachMu      sync.Mutex
+	attachedConn  net.Conn
 	attachedCodec *protocol.Codec
 }
 
 func NewDaemon(cfg DaemonConfig) *Daemon {
+	// Load auto-approve policies from config.
+	var policies []config.ApprovalRule
+	if jarvisCfg, err := config.Load(); err == nil {
+		policies = jarvisCfg.Policies.AutoApprove
+	}
+	if len(policies) > 0 {
+		log.Printf("sidecar: loaded %d auto-approve policy rules", len(policies))
+	}
+
 	d := &Daemon{
 		cfg:        cfg,
+		policies:   policies,
 		socketPath: SocketPath(cfg.SessionID),
 		ringBuf:    NewRingBuffer(10000),
 	}
@@ -200,6 +212,20 @@ func (d *Daemon) readPTY() {
 		d.state.Store(state)
 		if det != "" {
 			d.detail.Store(det)
+		}
+
+		// Auto-approve: if the prompt matches a policy, send "y\n" after a short delay.
+		if state == model.StateWaitingForApproval && len(d.policies) > 0 {
+			decision := EvaluateApproval(d.policies, det)
+			if decision.Action == config.ActionApprove {
+				toolName := ExtractToolName(det)
+				log.Printf("sidecar: auto-approved %q (matched rule for %v)", toolName, decision.Rule.Tool)
+				// Small delay so the prompt is fully rendered before we respond.
+				go func() {
+					time.Sleep(200 * time.Millisecond)
+					d.master.Write([]byte("y\n"))
+				}()
+			}
 		}
 
 		// Forward to attached client

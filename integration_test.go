@@ -807,3 +807,210 @@ func TestSidecarCrashExitCode(t *testing.T) {
 		t.Errorf("expected exited, got %q", final.LastKnownState)
 	}
 }
+
+// writeConfig writes a config.yaml with auto-approve policies to the test JARVIS_HOME.
+func writeConfig(t *testing.T, jarvisHome, yaml string) {
+	t.Helper()
+	path := filepath.Join(jarvisHome, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+// TestAutoApproveMatchingPolicy verifies that when a policy matches an approval
+// prompt, the sidecar auto-sends "y\n" without human intervention.
+func TestAutoApproveMatchingPolicy(t *testing.T) {
+	jarvisHome, cleanup := testEnv(t)
+	defer cleanup()
+
+	// Policy: auto-approve Read tool.
+	writeConfig(t, jarvisHome, `
+policies:
+  auto_approve:
+    - tool: [Read]
+      action: approve
+`)
+
+	sess, pid := spawnSidecar(t, "autoapprove-01", "auto-approve test", "claude")
+	socketPath := sidecar.SocketPath(sess.ID)
+	defer killSidecar(t, pid, socketPath)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Attach to send the "read" command.
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close()
+	codec := protocol.NewCodec(conn)
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
+
+	codec.Send(protocol.Request{Action: "attach"})
+	var buf protocol.Response
+	codec.Receive(&buf) // drain buffer
+
+	// Send "read" which triggers "Allow Read? (y/n)".
+	// With the policy, sidecar should auto-approve it.
+	codec.Send(protocol.Request{Action: "send_input", Text: "read\n"})
+
+	// Wait for output that indicates the approval went through automatically.
+	approved := false
+	for i := 0; i < 30; i++ {
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		var out protocol.Response
+		if err := codec.Receive(&out); err != nil {
+			break
+		}
+		if out.Event == "output" {
+			decoded, _ := base64.StdEncoding.DecodeString(out.Data)
+			if strings.Contains(string(decoded), "File read successfully") {
+				approved = true
+				break
+			}
+		}
+	}
+	if !approved {
+		t.Error("auto-approve did not fire: never saw 'File read successfully' output")
+	}
+}
+
+// TestAutoApproveDenyPattern verifies that a deny-list policy keeps the session
+// blocked and does NOT auto-approve.
+func TestAutoApproveDenyPattern(t *testing.T) {
+	jarvisHome, cleanup := testEnv(t)
+	defer cleanup()
+
+	// Policy: deny Bash commands matching "rm", approve everything else.
+	writeConfig(t, jarvisHome, `
+policies:
+  auto_approve:
+    - tool: [Bash]
+      command_matches: "rm"
+      action: ask_human
+    - tool: [Bash]
+      action: approve
+`)
+
+	sess, pid := spawnSidecar(t, "deny-01", "deny pattern test", "claude")
+	socketPath := sidecar.SocketPath(sess.ID)
+	defer killSidecar(t, pid, socketPath)
+
+	time.Sleep(500 * time.Millisecond)
+
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close()
+	codec := protocol.NewCodec(conn)
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
+
+	codec.Send(protocol.Request{Action: "attach"})
+	var buf protocol.Response
+	codec.Receive(&buf)
+
+	// "approve" triggers "Allow Bash?" with "rm -rf build/" in the detail.
+	// The deny pattern matches "rm", so it should NOT be auto-approved.
+	codec.Send(protocol.Request{Action: "send_input", Text: "approve\n"})
+
+	// Wait for the approval prompt to appear, then check quickly before
+	// idle detection overwrites the state.
+	time.Sleep(1 * time.Second)
+
+	// Read output to see if the command was auto-executed (it should NOT be).
+	autoApproved := false
+	for i := 0; i < 10; i++ {
+		conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		var out protocol.Response
+		if err := codec.Receive(&out); err != nil {
+			break
+		}
+		if out.Event == "output" {
+			decoded, _ := base64.StdEncoding.DecodeString(out.Data)
+			if strings.Contains(string(decoded), "Running command") {
+				autoApproved = true
+				break
+			}
+		}
+	}
+	if autoApproved {
+		t.Error("deny pattern should have blocked auto-approve, but command was executed")
+	}
+
+	// Now manually approve to clean up.
+	codec.Send(protocol.Request{Action: "send_input", Text: "y\n"})
+}
+
+// TestQuickApproveViaSocket verifies that sending "y\n" via send_input
+// approves a blocked session without attaching.
+func TestQuickApproveViaSocket(t *testing.T) {
+	jarvisHome, cleanup := testEnv(t)
+	defer cleanup()
+
+	// No auto-approve policies — everything requires manual approval.
+	writeConfig(t, jarvisHome, `
+policies:
+  auto_approve: []
+`)
+
+	sess, pid := spawnSidecar(t, "quickapprove-01", "quick approve test", "claude")
+	socketPath := sidecar.SocketPath(sess.ID)
+	defer killSidecar(t, pid, socketPath)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Attach and trigger an approval prompt.
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	codec := protocol.NewCodec(conn)
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
+
+	codec.Send(protocol.Request{Action: "attach"})
+	var buf protocol.Response
+	codec.Receive(&buf)
+
+	codec.Send(protocol.Request{Action: "send_input", Text: "approve\n"})
+
+	// Wait for the approval prompt to be detected.
+	time.Sleep(1 * time.Second)
+
+	state, _ := getStatus(t, socketPath)
+	if state != "waiting_for_approval" {
+		t.Errorf("expected waiting_for_approval before quick-approve, got %q", state)
+	}
+
+	// Now quick-approve via a separate connection (simulating dashboard behavior).
+	conn2, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("connect for quick-approve: %v", err)
+	}
+	codec2 := protocol.NewCodec(conn2)
+	conn2.SetDeadline(time.Now().Add(2 * time.Second))
+	codec2.Send(protocol.Request{Action: "send_input", Text: "y\n"})
+	conn2.Close()
+
+	// Verify the approval went through by reading output.
+	approved := false
+	for i := 0; i < 20; i++ {
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		var out protocol.Response
+		if err := codec.Receive(&out); err != nil {
+			break
+		}
+		if out.Event == "output" {
+			decoded, _ := base64.StdEncoding.DecodeString(out.Data)
+			if strings.Contains(string(decoded), "Command completed") || strings.Contains(string(decoded), "Running command") {
+				approved = true
+				break
+			}
+		}
+	}
+	conn.Close()
+
+	if !approved {
+		t.Error("quick-approve via socket did not work: never saw command execution output")
+	}
+}

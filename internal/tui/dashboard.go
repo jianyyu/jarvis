@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"jarvis/internal/config"
+	"jarvis/internal/model"
 	"jarvis/internal/session"
 	"jarvis/internal/store"
 
@@ -334,8 +335,8 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "a":
 		item := d.selectedItem()
-		if item != nil && item.IsSession() && item.State == "waiting_for_approval" {
-			return d, func() tea.Msg { return attachMsg{sessionID: item.ID} }
+		if item != nil && item.IsSession() && item.State == model.StateWaitingForApproval {
+			return d, d.quickApprove(item.ID)
 		}
 
 	case "d":

@@ -7,10 +7,13 @@ package tui
 // (spawning processes, writing YAML, killing sidecars) happens in the background.
 
 import (
+	"log"
+	"net"
 	"os"
 	"time"
 
 	"jarvis/internal/model"
+	"jarvis/internal/protocol"
 	"jarvis/internal/session"
 	"jarvis/internal/sidecar"
 	"jarvis/internal/store"
@@ -211,6 +214,25 @@ func deleteFolderRecursive(folderID string) {
 	}
 
 	store.DeleteFolder(folderID)
+}
+
+// quickApprove sends "y\n" to a blocked session's sidecar without attaching.
+func (d Dashboard) quickApprove(sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		socketPath := sidecar.SocketPath(sessionID)
+		conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+		if err != nil {
+			log.Printf("quick-approve: connect failed for %s: %v", sessionID, err)
+			return refreshMsg{items: buildItemList(d.mgr)}
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+		codec := protocol.NewCodec(conn)
+		codec.Send(protocol.Request{Action: "send_input", Text: "y\n"})
+
+		return refreshMsg{items: buildItemList(d.mgr)}
+	}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
