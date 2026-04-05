@@ -4,42 +4,23 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
+
+	"jarvis/internal/paths"
 )
 
-var nonAlphaNum = regexp.MustCompile(`[^a-zA-Z0-9]`)
-
 // EncodeCWD encodes a path the same way Claude Code does for project directories.
+// Delegates to the shared paths package.
 func EncodeCWD(cwd string) string {
-	return nonAlphaNum.ReplaceAllString(cwd, "-")
-}
-
-// projectDirs returns the candidate Claude project directories for a CWD.
-// If the CWD is inside a git worktree, it also includes the main repo root's project dir.
-func projectDirs(cwd string) []string {
-	home, _ := os.UserHomeDir()
-	base := filepath.Join(home, ".claude", "projects")
-	dirs := []string{filepath.Join(base, EncodeCWD(cwd))}
-
-	// If CWD is a worktree, also check the git repo root
-	cmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
-	if out, err := cmd.Output(); err == nil {
-		repoRoot := strings.TrimSpace(string(out))
-		if repoRoot != cwd {
-			dirs = append(dirs, filepath.Join(base, EncodeCWD(repoRoot)))
-		}
-	}
-	return dirs
+	return paths.EncodeCWD(cwd)
 }
 
 // SessionJSONLPath returns the path to a Claude Code session JSONL file.
 // It checks the CWD's project dir first, then falls back to the git repo root's project dir.
 func SessionJSONLPath(sessionID, cwd string) string {
-	for _, dir := range projectDirs(cwd) {
+	for _, dir := range paths.ProjectDirs(cwd) {
 		path := filepath.Join(dir, sessionID+".jsonl")
 		if _, err := os.Stat(path); err == nil {
 			return path
@@ -47,7 +28,7 @@ func SessionJSONLPath(sessionID, cwd string) string {
 	}
 	// Not found anywhere — return the primary path (for error reporting)
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "projects", EncodeCWD(cwd), sessionID+".jsonl")
+	return filepath.Join(home, ".claude", "projects", paths.EncodeCWD(cwd), sessionID+".jsonl")
 }
 
 // FindLatestSession scans the Claude project dirs for the most recent valid session JSONL.
@@ -56,7 +37,7 @@ func FindLatestSession(cwd string) string {
 	var bestID string
 	var bestTime time.Time
 
-	for _, dir := range projectDirs(cwd) {
+	for _, dir := range paths.ProjectDirs(cwd) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue

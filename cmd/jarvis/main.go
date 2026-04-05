@@ -15,6 +15,8 @@ import (
 	"jarvis/internal/sidecar"
 	"jarvis/internal/store"
 	"jarvis/internal/tui"
+	"jarvis/internal/ui"
+	"jarvis/internal/worktree"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -162,7 +164,7 @@ var lsCmd = &cobra.Command{
 			if s.Status == model.StatusArchived {
 				continue
 			}
-			icon := statusIcon(s.Status)
+			icon := ui.StatusIcon(s.Status)
 			state := ""
 			detail := ""
 
@@ -175,10 +177,10 @@ var lsCmd = &cobra.Command{
 				detail = s.LastKnownDetail
 			}
 
-			age := formatAge(s.UpdatedAt)
+			age := ui.FormatAge(s.UpdatedAt)
 			line := fmt.Sprintf("  %s %-30s %-10s %-25s %s", icon, s.Name, s.Status, state, age)
 			if detail != "" {
-				line += "  " + truncate(detail, 40)
+				line += "  " + ui.Truncate(detail, 40)
 			}
 			fmt.Println(line)
 		}
@@ -233,7 +235,7 @@ var doneCmd = &cobra.Command{
 
 		socketPath := sidecar.SocketPath(sess.ID)
 		if session.PingSidecar(socketPath) {
-			fmt.Println("Session is still running. Use 'jarvis-v2 rm' to stop and delete, or exit Claude first.")
+			fmt.Println("Session is still running. Use 'jarvis rm' to stop and delete, or exit Claude first.")
 			return nil
 		}
 
@@ -279,43 +281,6 @@ var rmCmd = &cobra.Command{
 	},
 }
 
-func statusIcon(status model.SessionStatus) string {
-	switch status {
-	case model.StatusActive:
-		return "●"
-	case model.StatusSuspended:
-		return "⏸"
-	case model.StatusDone:
-		return "✓"
-	case model.StatusQueued:
-		return "◌"
-	case model.StatusArchived:
-		return "▪"
-	default:
-		return "?"
-	}
-}
-
-func formatAge(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-3] + "..."
-}
 
 var renameCmd = &cobra.Command{
 	Use:   "rename [new-name]",
@@ -373,7 +338,7 @@ var initCmd = &cobra.Command{
 		sess.UpdatedAt = time.Now()
 
 		// Generate branch name from title
-		slug := slugify(title)
+		slug := worktree.Slugify(title)
 
 		// Find git repo root from session CWD
 		repoRoot := sess.CWD
@@ -394,7 +359,7 @@ var initCmd = &cobra.Command{
 		}
 
 		// Try git stack first, fall back to plain worktree
-		branch, useStack := createBranchAndWorktree(repoRoot, slug, worktreePath)
+		branch, useStack := worktree.CreateBranchAndWorktree(repoRoot, slug, worktreePath)
 		if branch == "" {
 			return fmt.Errorf("failed to create branch and worktree")
 		}
@@ -417,79 +382,6 @@ var initCmd = &cobra.Command{
 	},
 }
 
-// createBranchAndWorktree tries git stack first, falls back to plain git worktree.
-// Returns (branch name, whether git stack was used).
-func createBranchAndWorktree(repoRoot, slug, worktreePath string) (string, bool) {
-	// Check if git stack is available
-	checkCmd := exec.Command("git", "-C", repoRoot, "stack", "--version")
-	if err := checkCmd.Run(); err == nil {
-		// git stack is available — create a stacked branch (no checkout in main repo)
-		stackCmd := exec.Command("git", "-C", repoRoot, "stack", "create", slug, "--on", "master", "--no-checkout")
-		stackCmd.Stdout = os.Stdout
-		stackCmd.Stderr = os.Stderr
-		if err := stackCmd.Run(); err == nil {
-			stackBranch := "stack/" + slug
-			// Create worktree pointing to the existing stacked branch
-			wtCmd := exec.Command("git", "-C", repoRoot, "worktree", "add", worktreePath, stackBranch)
-			wtCmd.Stdout = os.Stdout
-			wtCmd.Stderr = os.Stderr
-			if err := wtCmd.Run(); err == nil {
-				return stackBranch, true
-			}
-			fmt.Printf("Warning: worktree creation failed for stacked branch, cleaning up: %v\n", err)
-			// Clean up the stacked branch since worktree failed
-			cleanCmd := exec.Command("git", "-C", repoRoot, "stack", "remove", slug)
-			cleanCmd.Run()
-		} else {
-			fmt.Printf("Warning: git stack create failed, falling back to plain branch: %v\n", err)
-		}
-	}
-
-	// Fallback: plain git worktree with a new branch
-	wtCmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "-b", slug, worktreePath)
-	wtCmd.Stdout = os.Stdout
-	wtCmd.Stderr = os.Stderr
-	if err := wtCmd.Run(); err != nil {
-		fmt.Printf("Error: failed to create worktree: %v\n", err)
-		return "", false
-	}
-	return slug, false
-}
-
-// slugify converts a title to a branch-safe slug.
-func slugify(title string) string {
-	title = strings.ToLower(title)
-	// Replace non-alphanumeric with hyphens
-	var b strings.Builder
-	for _, r := range title {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	slug := b.String()
-	// Collapse multiple hyphens
-	for strings.Contains(slug, "--") {
-		slug = strings.ReplaceAll(slug, "--", "-")
-	}
-	slug = strings.Trim(slug, "-")
-	// Remove filler words
-	fillers := map[string]bool{"the": true, "a": true, "an": true, "is": true, "are": true, "was": true, "were": true, "of": true, "for": true, "to": true, "in": true, "on": true, "at": true, "by": true, "with": true}
-	parts := strings.Split(slug, "-")
-	var filtered []string
-	for _, p := range parts {
-		if !fillers[p] && p != "" {
-			filtered = append(filtered, p)
-		}
-	}
-	slug = strings.Join(filtered, "-")
-	if len(slug) > 50 {
-		slug = slug[:50]
-		slug = strings.TrimRight(slug, "-")
-	}
-	return slug
-}
 
 func init() {
 	renameCmd.Flags().String("session-id", "", "Session ID to rename (defaults to JARVIS_SESSION_ID)")
