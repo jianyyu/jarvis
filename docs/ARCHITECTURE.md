@@ -151,7 +151,7 @@ Every Go package in the project, what it does, and its key files.
 
 2. **Manager.Spawn** (`internal/session/manager.go:49`):
    - Generates an 8-char hex ID via `model.NewID()` (`internal/model/id.go:9`).
-   - Creates a `model.Session` struct with `Status: active`, `CWD: cwd`, `OriginalCWD: cwd`.
+   - Creates a `model.Session` struct with `Status: active`, `LaunchDir: cwd` (and empty `WorktreeDir` until `jarvis init`).
    - Calls `store.SaveSession()` to write `~/.jarvis/sessions/<id>/session.yaml`.
    - Calls `m.spawnSidecar(sess, "claude")`.
 
@@ -228,13 +228,13 @@ Every Go package in the project, what it does, and its key files.
 
 2. **Manager.Resume** (`internal/session/manager.go:191`):
    - Removes the stale socket file.
-   - Determines the **launch CWD**: if `OriginalCWD` differs from `CWD` (meaning `jarvis init` moved the session to a worktree), uses `OriginalCWD` so Claude Code can find the original JSONL file. This is the **CWD swap trick** (see Gotchas).
-   - Checks the stored `ClaudeSessionID`. If it exists, validates it by calling `SessionIsValid()` which checks if the JSONL file exists and contains at least one user message. If invalid, logs a warning and starts fresh.
-   - If valid, builds: `claude --resume <session-id>`. If the launch CWD differs from the session CWD, appends `--append-system-prompt 'Your working directory is <worktree-path>'`.
+   - Uses **`LaunchDir`** for the sidecar `--cwd` (where `claude --resume` finds JSONL) and **`WorkspaceDir()`** (`WorktreeDir` if set, else `LaunchDir`) for the user-facing workspace. No temporary field swapping.
+   - Checks the stored `ClaudeSessionID`. If it exists, validates it by calling `SessionIsValid()` against both `LaunchDir` and `WorkspaceDir()` (JSONL may resolve under either). If invalid, logs a warning and starts fresh.
+   - If valid, builds: `claude --resume <session-id>`. If `LaunchDir != WorkspaceDir()`, appends `--append-system-prompt 'Your working directory is <worktree-path>'`.
    - If no valid session ID, falls back to plain `claude` (no resume).
-   - **Temporarily swaps** `sess.CWD` to `launchCWD`, calls `spawnSidecar`, then restores `sess.CWD` to the worktree path. This ensures the sidecar starts Claude in the right directory while the session record still points to the worktree.
+   - Calls `spawnSidecar`, which always passes `sess.LaunchDir` to the sidecar.
 
-3. **RecoverAllSessions** (`internal/session/resume.go:56`): Called at startup and when returning to the dashboard. Scans all sessions with `Status: active`, pings each sidecar, and marks dead ones as `Status: suspended`. For dead sidecars, tries to derive the last state from the JSONL file using `DeriveStatusFromJSONL`.
+3. **RecoverAllSessions** (`internal/session/resume.go:56`): Called at startup and when returning to the dashboard. Scans all sessions with `Status: active`, pings each sidecar, and marks dead ones as `Status: suspended`. For dead sidecars, tries to derive the last state from the JSONL file using `DeriveStatusFromSession`.
 
 ---
 
@@ -393,7 +393,7 @@ Every file that Jarvis writes to disk:
 
 | File | Format | Written By | When | Purpose |
 |---|---|---|---|---|
-| `~/.jarvis/sessions/<id>/session.yaml` | YAML | `store.SaveSession()` | On create, attach, detach, state change, resume, every 5s by sidecar | Canonical session record: ID, name, status, CWD, Claude session ID, sidecar info, timestamps |
+| `~/.jarvis/sessions/<id>/session.yaml` | YAML | `store.SaveSession()` | On create, attach, detach, state change, resume, every 5s by sidecar | Canonical session record: ID, name, status, `launch_dir`, optional `worktree_dir`, Claude session ID, sidecar info, timestamps (legacy `cwd` / `original_cwd` are migrated on load) |
 | `~/.jarvis/sessions/<id>/sidecar.log` | Plain text | `log.SetOutput()` in `cmd/sidecar/main.go:29` | Continuously while sidecar runs | Debug log from the sidecar daemon (startup, session ID detection, errors) |
 | `~/.jarvis/folders/<id>.yaml` | YAML | `store.SaveFolder()` | On folder create, rename, add/remove child, mark done | Folder metadata and children list |
 | `~/.jarvis/sockets/<id>.sock` | Unix socket | `net.Listen("unix", ...)` in `daemon.go:108` | Created on sidecar start, removed on clean exit | IPC endpoint between CLI and sidecar |
@@ -409,13 +409,11 @@ All YAML files are written atomically via `store.WriteAtomic()` (`internal/store
 
 ## 8. Gotchas and Sharp Edges
 
-### The CWD swap trick in Resume()
+### LaunchDir vs WorktreeDir
 
-`internal/session/manager.go:191-254`
+`internal/model/session.go`, `internal/session/manager.go`
 
-When `jarvis init` creates a worktree, it changes `sess.CWD` from the original repo to the worktree path. But Claude Code's JSONL file lives under `~/.claude/projects/<encoded-original-cwd>/`, not the worktree path. So when resuming, Jarvis must launch Claude from the **original** CWD (so `claude --resume` finds the JSONL) but keep the session's CWD pointing to the worktree (so the user's work continues there).
-
-The code does this by temporarily swapping `sess.CWD = launchCWD`, calling `spawnSidecar`, then restoring `sess.CWD = origCWD`. It also appends `--append-system-prompt` telling Claude to `cd` to the worktree. This is fragile: if anything between the swap and restore panics, the session record is left with the wrong CWD.
+`LaunchDir` is set at spawn and is where the sidecar runs Claude (`--cwd`); Claude's JSONL lives under `~/.claude/projects/<encoded-launch-dir>/`. `WorktreeDir` is optional: after `jarvis init`, it holds the git worktree path where the user edits, while `LaunchDir` stays on the original repo path. `Resume` always starts the sidecar in `LaunchDir` and, when `WorktreeDir` differs, appends `--append-system-prompt` so Claude `cd`s to the worktree. Old session files used `cwd` + `original_cwd`; `store.GetSession` migrates them into `launch_dir` + `worktree_dir` via `NormalizePathFields`.
 
 ### The JSONL detection race condition and pre-snapshot
 
@@ -538,7 +536,7 @@ Each test uses `testEnv(t)` which sets `JARVIS_HOME` to a temp dir and puts the 
 | `TestFindSessionByName` | Exact match, prefix match, case-insensitive match, and not-found error |
 | `TestCLILs` | Runs `jarvis ls` as a subprocess, checks output contains session names |
 | `TestCLIDoneAndRm` | `jarvis done` marks session done; `jarvis rm` deletes it from disk |
-| `TestCLIStatus` | `jarvis status <name>` prints correct session name, ID, and CWD |
+| `TestCLIStatus` | `jarvis status <name>` prints correct session name, ID, and launch directory |
 | `TestSidecarProcessExitMarksSessionSuspended` | When mock_claude exits cleanly, session.yaml is updated to `suspended` with `LastKnownState: exited` |
 | `TestSidecarCrashExitCode` | `mock_claude` `crash` command (exit 1) produces non-zero exit code in `session_ended` event and persists `exited` state |
 
@@ -547,6 +545,6 @@ Each test uses `testEnv(t)` which sets `JARVIS_HOME` to a temp dir and puts the 
 - The TUI dashboard (Bubble Tea rendering and key handling) -- no automated tests
 - The `jarvis init` / worktree creation flow
 - The resume flow with `claude --resume` (would require a real Claude binary)
-- The CWD swap trick in `Resume()`
+- Edge cases around `LaunchDir` / `WorktreeDir` migration from legacy YAML
 - The JSONL status derivation (tested indirectly via `RecoverAllSessions`)
 - Folder operations (create, nest, delete recursively)

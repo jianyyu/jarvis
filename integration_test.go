@@ -160,7 +160,7 @@ func spawnSidecar(t *testing.T, sessionID, name, claudeCmd string) (*model.Sessi
 		Type:      "session",
 		Name:      name,
 		Status:    model.StatusActive,
-		CWD:       t.TempDir(),
+		LaunchDir: t.TempDir(),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -173,7 +173,7 @@ func spawnSidecar(t *testing.T, sessionID, name, claudeCmd string) (*model.Sessi
 
 	cmd := exec.Command(sidecarBin,
 		"--session-id", sessionID,
-		"--cwd", sess.CWD,
+		"--cwd", sess.LaunchDir,
 		"--claude-cmd", claudeCmd,
 		"--cols", "80",
 		"--rows", "24",
@@ -551,7 +551,7 @@ func TestFindSessionByName(t *testing.T) {
 	for _, name := range []string{"fix auth bug", "refactor database", "fix typo in readme"} {
 		s := &model.Session{
 			ID: model.NewID(), Type: "session", Name: name,
-			Status: model.StatusActive, CWD: "/tmp", CreatedAt: now, UpdatedAt: now,
+			Status: model.StatusActive, LaunchDir: "/tmp", CreatedAt: now, UpdatedAt: now,
 		}
 		store.SaveSession(s)
 	}
@@ -600,7 +600,7 @@ func TestCLILs(t *testing.T) {
 	for _, name := range []string{"session alpha", "session beta"} {
 		s := &model.Session{
 			ID: model.NewID(), Type: "session", Name: name,
-			Status: model.StatusActive, CWD: "/tmp", CreatedAt: now, UpdatedAt: now,
+			Status: model.StatusActive, LaunchDir: "/tmp", CreatedAt: now, UpdatedAt: now,
 		}
 		store.SaveSession(s)
 	}
@@ -633,7 +633,7 @@ func TestCLIDoneAndRm(t *testing.T) {
 	now := time.Now()
 	sess := &model.Session{
 		ID: "done-rm-01", Type: "session", Name: "done-test",
-		Status: model.StatusSuspended, CWD: "/tmp", CreatedAt: now, UpdatedAt: now,
+		Status: model.StatusSuspended, LaunchDir: "/tmp", CreatedAt: now, UpdatedAt: now,
 	}
 	store.SaveSession(sess)
 
@@ -678,7 +678,7 @@ func TestCLIStatus(t *testing.T) {
 	now := time.Now()
 	sess := &model.Session{
 		ID: "status-01", Type: "session", Name: "status-test",
-		Status: model.StatusActive, CWD: "/tmp/test-cwd",
+		Status: model.StatusActive, LaunchDir: "/tmp/test-cwd",
 		CreatedAt: now, UpdatedAt: now,
 	}
 	store.SaveSession(sess)
@@ -702,7 +702,7 @@ func TestCLIStatus(t *testing.T) {
 		t.Errorf("output should contain session ID:\n%s", output)
 	}
 	if !strings.Contains(output, "/tmp/test-cwd") {
-		t.Errorf("output should contain CWD:\n%s", output)
+		t.Errorf("output should contain launch dir:\n%s", output)
 	}
 }
 

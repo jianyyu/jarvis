@@ -25,7 +25,7 @@ func TestDaemonPingPong(t *testing.T) {
 	now := time.Now()
 	store.SaveSession(&model.Session{
 		ID: sessionID, Type: "session", Name: "test",
-		Status: model.StatusActive, CreatedAt: now, UpdatedAt: now,
+		Status: model.StatusActive, LaunchDir: tmp, CreatedAt: now, UpdatedAt: now,
 		Sidecar: &model.SidecarInfo{Socket: socketPath, State: model.StateWorking},
 	})
 

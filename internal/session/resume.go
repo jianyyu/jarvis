@@ -73,11 +73,9 @@ func RecoverAllSessions() error {
 		lastState := s.LastKnownState
 		lastDetail := s.LastKnownDetail
 
-		if s.ClaudeSessionID != "" && s.CWD != "" {
-			if state, detail, err := DeriveStatusFromJSONL(s.ClaudeSessionID, s.CWD); err == nil && state != "unknown" {
-				lastState = state
-				lastDetail = detail
-			}
+		if state, detail, err := DeriveStatusFromSession(s); err == nil && state != "unknown" {
+			lastState = state
+			lastDetail = detail
 		}
 
 		s.Status = model.StatusSuspended

@@ -209,7 +209,10 @@ var statusCmd = &cobra.Command{
 		if detail != "" {
 			fmt.Printf("Detail:  %s\n", detail)
 		}
-		fmt.Printf("CWD:     %s\n", sess.CWD)
+		fmt.Printf("Launch:  %s\n", sess.LaunchDir)
+		if sess.WorktreeDir != "" {
+			fmt.Printf("Worktree: %s\n", sess.WorktreeDir)
+		}
 		if sess.ClaudeSessionID != "" {
 			fmt.Printf("Claude:  %s\n", sess.ClaudeSessionID)
 		}
@@ -340,8 +343,8 @@ var initCmd = &cobra.Command{
 		// Generate branch name from title
 		slug := worktree.Slugify(title)
 
-		// Find git repo root from session CWD
-		repoRoot := sess.CWD
+		// Git repo from workspace (worktree path after init, else launch dir)
+		repoRoot := sess.WorkspaceDir()
 		gitCmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--show-toplevel")
 		if out, err := gitCmd.Output(); err == nil {
 			repoRoot = strings.TrimSpace(string(out))
@@ -354,7 +357,7 @@ var initCmd = &cobra.Command{
 		// Check if worktree already exists
 		if _, err := os.Stat(worktreePath); err == nil {
 			fmt.Printf("Worktree already exists at %s\n", worktreePath)
-			sess.CWD = worktreePath
+			sess.WorktreeDir = worktreePath
 			return store.SaveSession(sess)
 		}
 
@@ -364,7 +367,7 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to create branch and worktree")
 		}
 
-		sess.CWD = worktreePath
+		sess.WorktreeDir = worktreePath
 		if err := store.SaveSession(sess); err != nil {
 			return err
 		}

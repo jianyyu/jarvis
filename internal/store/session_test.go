@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestSessionRoundTrip(t *testing.T) {
 		Type:      "session",
 		Name:      "test session",
 		Status:    model.StatusActive,
-		CWD:       "/tmp/test",
+		LaunchDir: "/tmp/test",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -39,6 +40,45 @@ func TestSessionRoundTrip(t *testing.T) {
 	if loaded.Status != model.StatusActive {
 		t.Errorf("status: got %q, want %q", loaded.Status, model.StatusActive)
 	}
+	if loaded.LaunchDir != "/tmp/test" {
+		t.Errorf("launch_dir: got %q, want %q", loaded.LaunchDir, "/tmp/test")
+	}
+}
+
+func TestSessionLegacyYAMLMigration(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("JARVIS_HOME", tmp)
+	defer os.Unsetenv("JARVIS_HOME")
+
+	id := "legacy-1"
+	dir := filepath.Join(tmp, "sessions", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`id: legacy-1
+type: session
+name: x
+status: active
+cwd: /wt
+original_cwd: /repo
+created_at: 2020-01-01T00:00:00Z
+updated_at: 2020-01-01T00:00:00Z
+`)
+	path := filepath.Join(dir, "session.yaml")
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := GetSession(id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if loaded.LaunchDir != "/repo" {
+		t.Errorf("LaunchDir: got %q, want /repo", loaded.LaunchDir)
+	}
+	if loaded.WorktreeDir != "/wt" {
+		t.Errorf("WorktreeDir: got %q, want /wt", loaded.WorktreeDir)
+	}
 }
 
 func TestListSessions(t *testing.T) {
@@ -53,6 +93,7 @@ func TestListSessions(t *testing.T) {
 			Type:      "session",
 			Name:      name,
 			Status:    model.StatusActive,
+			LaunchDir: "/tmp",
 			CreatedAt: now.Add(time.Duration(i) * time.Minute),
 			UpdatedAt: now.Add(time.Duration(i) * time.Minute),
 		}
@@ -87,6 +128,7 @@ func TestListSessionsWithFilter(t *testing.T) {
 			Type:      "session",
 			Name:      "s" + string(rune('0'+i)),
 			Status:    st,
+			LaunchDir: "/tmp",
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
@@ -105,7 +147,7 @@ func TestDeleteSession(t *testing.T) {
 	defer os.Unsetenv("JARVIS_HOME")
 
 	now := time.Now()
-	s := &model.Session{ID: "del123", Type: "session", Name: "delete me", Status: model.StatusActive, CreatedAt: now, UpdatedAt: now}
+	s := &model.Session{ID: "del123", Type: "session", Name: "delete me", Status: model.StatusActive, LaunchDir: "/tmp", CreatedAt: now, UpdatedAt: now}
 	SaveSession(s)
 
 	if err := DeleteSession("del123"); err != nil {

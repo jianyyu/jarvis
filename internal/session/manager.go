@@ -57,14 +57,13 @@ func (m *Manager) Spawn(name string, cwd string, claudeArgs []string) (*model.Se
 
 	now := time.Now()
 	sess := &model.Session{
-		ID:          model.NewID(),
-		Type:        "session",
-		Name:        name,
-		Status:      model.StatusActive,
-		CWD:         cwd,
-		OriginalCWD: cwd,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        model.NewID(),
+		Type:      "session",
+		Name:      name,
+		Status:    model.StatusActive,
+		LaunchDir: cwd,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	if err := store.SaveSession(sess); err != nil {
@@ -99,7 +98,7 @@ func (m *Manager) spawnSidecar(sess *model.Session, claudeCmd string) error {
 
 	args := []string{
 		"--session-id", sess.ID,
-		"--cwd", sess.CWD,
+		"--cwd", sess.LaunchDir,
 		"--claude-cmd", claudeCmd,
 		"--cols", fmt.Sprintf("%d", cols),
 		"--rows", fmt.Sprintf("%d", rows),
@@ -115,7 +114,7 @@ func (m *Manager) spawnSidecar(sess *model.Session, claudeCmd string) error {
 	env := os.Environ()
 	env = append(env, "JARVIS_SESSION_ID="+sess.ID)
 	cmd.Env = env
-	cmd.Dir = sess.CWD
+	cmd.Dir = sess.LaunchDir
 
 	// Detach: new session so it survives parent exit
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -195,23 +194,15 @@ func (m *Manager) Resume(sess *model.Session) error {
 	// Build resume command
 	var claudeArgs []string
 
-	// Determine the CWD to launch Claude from.
-	// If CWD was changed (e.g. by jarvis init to a worktree), launch from
-	// the original CWD so claude --resume can find the JSONL, and inject a
-	// system prompt telling Claude to work in the worktree.
-	launchCWD := sess.CWD
-	if sess.OriginalCWD != "" && sess.OriginalCWD != sess.CWD {
-		launchCWD = sess.OriginalCWD
-	}
+	workspaceDir := sess.WorkspaceDir()
+	launchDir := sess.LaunchDir
 
 	// Use stored session ID if valid. If no stored ID exists or it's invalid,
 	// start fresh rather than guessing — FindLatestSession is unreliable when
 	// multiple jarvis sessions share the same project directory.
 	claudeSessionID := sess.ClaudeSessionID
 	if claudeSessionID != "" {
-		// Check both launchCWD and session CWD (worktree) since the JSONL
-		// could live under either project directory.
-		if !SessionIsValid(claudeSessionID, launchCWD) && !SessionIsValid(claudeSessionID, sess.CWD) {
+		if !SessionIsValid(claudeSessionID, launchDir) && !SessionIsValid(claudeSessionID, workspaceDir) {
 			log.Printf("session: stored Claude session %s is invalid, starting fresh", claudeSessionID)
 			claudeSessionID = ""
 		}
@@ -227,11 +218,10 @@ func (m *Manager) Resume(sess *model.Session) error {
 		claudeArgs = []string{"claude"}
 	}
 
-	// If launching from a different CWD than the session's worktree,
-	// tell Claude to work in the worktree directory.
+	// LaunchDir vs worktree: Claude must start in LaunchDir for JSONL; user edits in workspaceDir.
 	// Quote the prompt value so splitCommand in pty.go keeps it as one arg.
-	if launchCWD != sess.CWD {
-		prompt := fmt.Sprintf("Your working directory for this session is %s — cd there before making any changes.", sess.CWD)
+	if launchDir != workspaceDir {
+		prompt := fmt.Sprintf("Your working directory for this session is %s — cd there before making any changes.", workspaceDir)
 		claudeArgs = append(claudeArgs,
 			"--append-system-prompt",
 			fmt.Sprintf("'%s'", prompt))
@@ -239,19 +229,12 @@ func (m *Manager) Resume(sess *model.Session) error {
 
 	claudeCmd := strings.Join(claudeArgs, " ")
 
-	// Temporarily override CWD for sidecar launch
-	origCWD := sess.CWD
-	sess.CWD = launchCWD
 	sess.Status = model.StatusActive
 	sess.UpdatedAt = time.Now()
 	if err := store.SaveSession(sess); err != nil {
 		return err
 	}
-	err := m.spawnSidecar(sess, claudeCmd)
-	// Restore the worktree CWD in the session
-	sess.CWD = origCWD
-	store.SaveSession(sess)
-	return err
+	return m.spawnSidecar(sess, claudeCmd)
 }
 
 // GetStatus returns the status of a session (live from sidecar or derived).
@@ -275,7 +258,7 @@ func (m *Manager) GetStatus(sessionID string) (string, string, error) {
 	}
 
 	if sess.ClaudeSessionID != "" {
-		state, detail, _ := DeriveStatusFromJSONL(sess.ClaudeSessionID, sess.CWD)
+		state, detail, _ := DeriveStatusFromSession(sess)
 		return state, detail, nil
 	}
 
