@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"jarvis/internal/model"
 	"jarvis/internal/paths"
 )
 
@@ -158,4 +159,20 @@ func DeriveStatusFromJSONL(sessionID, cwd string) (lastState string, detail stri
 	}
 
 	return "unknown", "", nil
+}
+
+// DeriveStatusFromSession looks up JSONL under LaunchDir, then WorkspaceDir if different.
+func DeriveStatusFromSession(s *model.Session) (lastState string, detail string, err error) {
+	if s == nil || s.ClaudeSessionID == "" || s.LaunchDir == "" {
+		return "unknown", "", nil
+	}
+	st, det, err := DeriveStatusFromJSONL(s.ClaudeSessionID, s.LaunchDir)
+	if st != "unknown" {
+		return st, det, err
+	}
+	wd := s.WorkspaceDir()
+	if wd != s.LaunchDir {
+		return DeriveStatusFromJSONL(s.ClaudeSessionID, wd)
+	}
+	return st, det, err
 }

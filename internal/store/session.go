@@ -29,6 +29,7 @@ func sessionPath(id string) string {
 }
 
 func SaveSession(s *model.Session) error {
+	s.NormalizePathFields()
 	data, err := yaml.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)
@@ -45,6 +46,7 @@ func GetSession(id string) (*model.Session, error) {
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("unmarshal session %s: %w", id, err)
 	}
+	s.NormalizePathFields()
 	return &s, nil
 }
 
