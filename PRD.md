@@ -641,98 +641,6 @@ When no session is attached, the dashboard takes the full screen:
   [enter] attach  [a]pprove  [/]search  [n]ew  [q]uit
 ```
 
-### Ideation
-
-Ideas are lightweight, unstructured captures — things that pop into your head that aren't ready to be tasks yet.
-
-```
-  You: /idea we should add rate limiting to the public API endpoints.
-       maybe token bucket per user. look at how stripe does it.
-
-  Jarvis: 💡 Idea saved: "Rate limiting for public API"
-          Tags: #api #rate-limiting #security
-```
-
-Ideas live in a separate space from tasks — no worktree, no session, no status tracking. Just a scratchpad.
-
-**Idea lifecycle:**
-
-```
-  💡 capture → 💡 refine → 📁 promote to project → 📋 break into tasks
-```
-
-**Browsing ideas:**
-
-```
-  You: /ideas
-
-  Jarvis:
-    💡 Rate limiting for public API                    2d ago
-       Token bucket per user. Look at how stripe does it.
-       Tags: #api #rate-limiting #security
-
-    💡 Migrate tests from unittest to pytest           1w ago
-       Start with auth module. parameterize the token tests.
-       Tags: #testing #tech-debt
-
-    💡 Auto-generate API docs from proto definitions   2w ago
-       Tags: #docs #proto
-```
-
-**Refining an idea** — you can add notes over time, and the main session helps you think:
-
-```
-  You: /idea rate limiting — actually we also need per-IP limiting
-       for unauthenticated endpoints. and we need a bypass for
-       internal services.
-
-  Jarvis: Updated "Rate limiting for public API":
-          + Per-IP limiting for unauthenticated endpoints
-          + Bypass mechanism for internal services
-          Added tags: #internal-services
-```
-
-**Promoting to a project:**
-
-```
-  You: the rate limiting idea is ready, let's make it a project
-
-  Jarvis: Promoting "Rate limiting for public API" to a project.
-
-    Based on your notes, here's a suggested task breakdown:
-      📁 Rate Limiting for Public API
-        📋 Research: audit current endpoints, check stripe's approach
-        📋 Design: token bucket implementation, per-IP vs per-user
-        📋 Implement: middleware + configuration
-        📋 Internal bypass: service-to-service auth exemption
-        📋 Load testing: verify limits under production traffic
-
-    Want me to create this project with these subtasks? (y/edit/n)
-
-  You: y
-
-  Jarvis: Created project with 5 subtasks. Idea archived.
-          Want me to start working on the research task?
-```
-
-**Idea storage:**
-
-```
-~/.jarvis/
-  ideas/
-    <idea-id>.yaml
-      id: "i1a2b3c4"
-      title: "Rate limiting for public API"
-      notes:
-        - text: "token bucket per user. look at how stripe does it."
-          added_at: "2026-03-26T14:00:00Z"
-        - text: "per-IP for unauth. bypass for internal."
-          added_at: "2026-03-28T09:00:00Z"
-      tags: ["api", "rate-limiting", "security", "internal-services"]
-      status: active          # active | promoted | discarded
-      promoted_to: null       # task ID if promoted
-      created_at: "2026-03-26T14:00:00Z"
-```
 
 ### Outbox Review
 
@@ -767,7 +675,7 @@ User reviews, optionally edits, then sends. Only then does Jarvis post to GitHub
 3. Jarvis creates session: "review-PR-1234"
 4. Claude Code launches with prompt:
    "Review PR #1234 in universe. Read the diff, understand the changes,
-    and prepare review comments. Write comments to /tmp/jarvis/outbox/task-xxx.json.
+    and prepare review comments. Write comments to ~/.jarvis/sessions/<id>/outbox/pr-comments.json.
     Do NOT post comments directly."
 5. Dashboard shows: ● review-PR-1234  working  reading diff...
 6. Session completes → ✓ review-PR-1234  done  3 comments drafted  ←review
@@ -1014,10 +922,8 @@ Routing is **deterministic** — config rules, not AI guessing. Simple, predicta
 | `/ls --archived` | Dashboard | Show archived items |
 | `/search <query>` | Dashboard | Search sessions, folders, ideas |
 | `/outbox` | Dashboard | View pending drafts |
-| `/ideas` | Dashboard | Browse idea backlog |
-| `/idea "text"` | Dashboard | Capture a new idea |
 | `/q` | Dashboard | Quit jarvis (sessions continue in background) |
-| Ctrl-D | Attached | Detach back to dashboard |
+| Ctrl-\ | Attached | Detach back to dashboard |
 
 
 ---
@@ -1065,7 +971,7 @@ sidecar:
   socket: "/tmp/jarvis/task-a1b2c3d4.sock"
   started_at: "2026-03-19T10:00:00Z"
   state: "working"          # working | waiting_for_approval | idle | exited
-  transport: "pty"          # pty | headless
+  transport: "pty"          # pty (interactive with PTY) | headless (Claude Code --print, no PTY)
 
 # Persisted by sidecar periodically — survives instance restart
 last_known_state: "working"           # last state before sidecar died
@@ -1106,8 +1012,6 @@ archived_at: null
       outbox/                 # prepared responses
         pr-comments.json
         slack-reply.json
-  ideas/
-    <idea-id>.yaml            # lightweight idea capture
   context_registry.yaml       # external context → session ID mapping
 ```
 
@@ -1127,77 +1031,120 @@ contexts:
 
 ## Implementation Phases
 
-### Phase 1: Sidecar + Attach/Detach
+### Phase 1: Sidecar + Attach/Detach ✅ DONE
 
-- `sidecar.py` — daemon process with PTY + Unix socket
-- `protocol.py` — JSON message types and serialization
-- Update `launcher.py` — spawn sidecar instead of `subprocess.run()`
-- Basic attach/detach — raw PTY passthrough mode
+- Sidecar daemon process with PTY + Unix socket (Go, `internal/sidecar/`)
+- JSON-over-socket protocol (`internal/protocol/`)
+- Session manager — spawn sidecar instead of blocking subprocess
+- Attach/detach — raw PTY passthrough with Ctrl-\ detach
 - Sidecar state persistence — periodically write status to session.yaml
 - Resume after instance restart — detect dead sidecars, derive status from JSONL, `claude --resume`
+- Ring buffer (10K lines) for attach catch-up
 
 **Outcome:** Sessions survive jarvis exit. Sessions recoverable after instance restart via `claude --resume`. Single session works end-to-end through sidecar.
 
-### Phase 2: Multi-Session Dashboard + Search + Status
+### Phase 2: Multi-Session Dashboard ✅ DONE
 
-- `dashboard.py` — TUI showing folder tree + session statuses
-- Folder management — create, rename, move, archive
+- Bubble Tea TUI dashboard (`internal/tui/`) — folder tree + session statuses
+- Folder management — create, rename, delete, nest
 - Live status polling — periodic `get_status` to all active sidecars
 - Suspended status — read JSONL tail for dead sidecars
 - `⚠ needs attention` — float blocked sessions to top
-- Search — filter across folders, sessions, and ideas by name/status
+- Search — filter across folders and sessions by name
 - Session switching — navigate and attach from dashboard
+- Worktree + branch creation via `jarvis init` (git-stack with fallback)
 
 **Outcome:** User can see all sessions at a glance, find what needs attention, search, and switch between sessions. The core "commander" loop works.
 
-### Phase 3: External System Integration
+### Phase 3: Auto-Approve & Intervention Policies ✅ DONE
 
-- `context_registry.py` — map external contexts to sessions, dedup
-- `watchers/github_watcher.py` — poll for review requests, PR updates
-- `watchers/slack_watcher.py` — poll for DMs, mentions, thread updates
-- `watchers/pd_watcher.py` — poll for assigned incidents
-- `watchers/jira_watcher.py` — poll for ticket assignments/updates
+> **Why this is next:** The biggest daily pain point is sessions blocked on tool-approval prompts. The sidecar already detects approval patterns (`DetectState` in `internal/sidecar/status.go`); this phase adds the ability to auto-respond based on configurable policies. Highest ROI, lowest implementation cost.
+
+- Policy engine — parse auto-approve rules from `~/.jarvis/config.yaml`
+- Sidecar auto-respond — when an approval prompt matches a policy, send `y\n` automatically
+- Deny-list patterns — certain commands (rm, drop, force push) always require human approval via `ask_human`
+- Quick-approve from dashboard — press `a` on a blocked session to approve without attaching
+
+```yaml
+# ~/.jarvis/config.yaml
+policies:
+  auto_approve:
+    - tool: [Read, Grep, Glob, WebFetch, WebSearch]
+      action: approve
+    - tool: Bash
+      command_matches: "npm install|npm run|pytest|make|cargo|go test|go build"
+      action: approve
+    - tool: Bash
+      command_matches: "rm|drop|delete|force|--force"
+      action: ask_human
+    - tool: Edit
+      action: approve
+    - tool: Write
+      action: approve
+```
+
+**Outcome:** Routine prompts auto-handled. Dangerous operations surfaced for human decision. Sessions run unattended for much longer.
+
+### Phase 4: External System Integration
+
+> **Why after auto-approve:** Watchers create sessions automatically, and those sessions will hit approval prompts. Auto-approve (Phase 3) must be in place first, otherwise auto-created sessions just pile up as "blocked" with nobody watching.
+
+- `internal/watcher/` — background goroutines that poll external systems
+- Context registry — `~/.jarvis/context_registry.yaml` maps external refs to session IDs (dedup)
 - Routing rules in config — deterministic placement into folders
-- Prompt templates per trigger type
+- Prompt templates per trigger type — what instructions each auto-created session gets
+
+**Watchers:**
+
+| Watcher | Source | Trigger | Action |
+|---------|--------|---------|--------|
+| `github` | GitHub API / MCP | Review request assigned | Create session: review PR, prepare comments |
+| `slack` | Slack API / MCP | DM or mention | Create or route: analyze context, prepare response |
+| `pagerduty` | PagerDuty API / MCP | Incident assigned | Create session: investigate, prepare response |
+| `jira` | Jira API / MCP | Ticket assigned/updated | Create or route: analyze, prepare response |
+
+Watchers run as goroutines inside the jarvis process. They die when jarvis exits, restart when jarvis launches. The context registry (on disk) prevents duplicate session creation across restarts.
 
 **Outcome:** Jarvis automatically creates sessions in response to external events. No more manual checking of Slack/GitHub/PD/Jira. Existing sessions receive follow-up context.
 
-### Phase 4: Outbox
+**Estimated effort:** ~2,700 lines (registry 400 + 4 watchers 2000 + routing 300)
 
-- `outbox.py` — store prepared responses per session
+### Phase 5: Outbox
+
+> **Why after watchers:** The outbox is most useful when sessions are auto-created by watchers. A PR review session auto-created by the GitHub watcher produces draft comments → outbox → you review and send. Without watchers, the outbox is just a manual "save draft" feature.
+
+- Outbox store — prepared responses per session (YAML/JSON under `~/.jarvis/sessions/<id>/outbox/`)
 - Outbox TUI — review, edit, send, discard
-- GitHub integration — post approved comments via API/MCP
-- Slack integration — send approved messages via API/MCP
+- GitHub integration — post approved comments via MCP
+- Slack integration — send approved messages via MCP
 - Audit log — record what was sent, when, original vs. edited
 
 **Outcome:** Jarvis prepares responses; human reviews and sends. Full audit trail. No external action without approval.
 
-### Phase 5: Intervention & Policies
+**Estimated effort:** ~1,900 lines (store 600 + TUI 800 + integrations 500)
 
-- Pattern detection in sidecar — identify permission prompts from PTY output
-- Auto-approve policies in config
-- Quick-approve from dashboard — approve without attaching
-- Hook-based structured events as additional signal
+### Phase 6: Polish & UX
 
-**Outcome:** Routine prompts auto-handled. Non-routine prompts surfaced for human decision.
+- Session overlay switcher — Ctrl-J popup to switch sessions without detaching (like tmux `Ctrl-b s`)
+- Session logging — persist all PTY output to file (not just ring buffer)
+- Health monitoring — detect stuck/hung sessions (no output for 10+ minutes)
+- Graceful shutdown — signal all sidecars on `jarvis stop`
+- Archiving — hide done sessions, clean up worktrees for merged branches
+- Dashboard slash commands — `/approve`, `/archive`, `/move` from the smart bar
 
-### Phase 6: Smart Bar + Ideas
+**Outcome:** Polished daily-driver experience. No rough edges.
 
-- Smart bar — slash commands for all operations
-- Natural language mode — thin Claude call for ambiguous requests
-- Idea capture — `/idea` to save, `/ideas` to browse
-- Idea promotion — promote idea to folder + sessions
-- Context handoff — prepare context bundles when spawning sessions
+**Estimated effort:** ~1,400 lines
 
-**Outcome:** Full commander experience. Natural language task dispatch. Idea backlog for capturing and maturing future work.
+### Projected Code Size
 
-### Phase 7: Polish
-
-- Scrollback buffer in sidecar
-- Session logging (persist all output to file)
-- Health monitoring (detect stuck/hung sessions)
-- Graceful shutdown (signal all sidecars on `jarvis stop`)
-- Transport agnosticism — support headless mode alongside PTY
+| Phase | New Lines | Cumulative |
+|-------|-----------|------------|
+| Phase 1+2 (done) | ~5,500 | ~5,500 |
+| Phase 3: Auto-approve (done) | ~800 | ~6,300 |
+| Phase 4: Watchers | ~2,700 | ~9,000 |
+| Phase 5: Outbox | ~1,900 | ~10,900 |
+| Phase 6: Polish | ~1,400 | **~12,300** |
 
 ---
 
@@ -1212,14 +1159,13 @@ contexts:
 
 ## Open Questions
 
-1. **Keybinding for detach** — `Ctrl-D`? `Ctrl-\`? Needs to not conflict with Claude Code's own bindings.
-2. **Max concurrent sessions** — should there be a limit? Claude Code sessions can be resource-heavy.
-3. **Output buffering size** — how much scrollback should the sidecar retain? 10K lines? 100K?
-4. **Watcher implementation** — polling vs. webhooks? Polling is simpler but adds latency. Webhooks require a local server.
-5. **Outbox format** — structured JSON per output type? Or freeform markdown that Jarvis posts verbatim?
-6. **Security** — Unix socket permissions (`0600`). Outbox files may contain sensitive review content.
-7. **Session lifetime** — when should a session auto-terminate? After idle for N minutes? After task completion?
-8. **Watcher dedup window** — how long to suppress duplicate events for the same context?
+1. **Max concurrent sessions** — should there be a limit? Claude Code sessions can be resource-heavy.
+2. **Output buffering size** — how much scrollback should the sidecar retain? 10K lines? 100K?
+3. **Watcher implementation** — polling vs. webhooks? Polling is simpler but adds latency. Webhooks require a local server.
+4. **Outbox format** — structured JSON per output type? Or freeform markdown that Jarvis posts verbatim?
+5. **Session lifetime** — when should a session auto-terminate? After idle for N minutes? After task completion?
+6. **Watcher dedup window** — how long to suppress duplicate events for the same context?
+7. **Watcher availability** — watchers run inside jarvis and die when jarvis exits. External events are missed until jarvis restarts. Is this acceptable, or should watchers be a separate always-on daemon?
 
 ---
 
@@ -1230,12 +1176,12 @@ No new external dependencies required for core:
 
 | Component       | Library                                                     |
 | --------------- | ----------------------------------------------------------- |
-| PTY management  | `pty`, `os`, `fcntl` (stdlib)                               |
-| Async I/O       | `asyncio` (stdlib)                                          |
-| Unix sockets    | `asyncio.open_unix_connection` (stdlib)                     |
-| Daemonization   | `os.fork()`, `os.setsid()` (stdlib)                         |
-| TUI (dashboard) | `prompt_toolkit` (existing dep)                             |
-| Display         | `rich` (existing dep)                                       |
+| Language        | Go 1.24                                                     |
+| PTY management  | `creack/pty` (Go PTY library)                               |
+| Unix sockets    | `net` (stdlib)                                              |
+| Daemonization   | `os/exec` + `syscall.Setsid` (stdlib)                       |
+| TUI (dashboard) | Bubble Tea + Bubbles + Lipgloss (charmbracelet)             |
+| Config/storage  | `gopkg.in/yaml.v3`                                         |
 | External APIs   | MCP servers (GitHub, Slack, PagerDuty — already configured) |
 
 

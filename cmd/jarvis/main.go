@@ -343,8 +343,8 @@ var initCmd = &cobra.Command{
 		// Generate branch name from title
 		slug := worktree.Slugify(title)
 
-		// Git repo from workspace (worktree path after init, else launch dir)
-		repoRoot := sess.WorkspaceDir()
+		// Always anchor git operations to LaunchDir — the original repo where Claude runs.
+		repoRoot := sess.LaunchDir
 		gitCmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--show-toplevel")
 		if out, err := gitCmd.Output(); err == nil {
 			repoRoot = strings.TrimSpace(string(out))
