@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
+	"net"
 	"time"
 
 	"jarvis/internal/config"
 	"jarvis/internal/model"
+	"jarvis/internal/protocol"
 	"jarvis/internal/session"
+	"jarvis/internal/sidecar"
 	"jarvis/internal/store"
 )
 
@@ -106,13 +108,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		if cwd == "" {
 			cwd = "."
 		}
-		claudeArgs := []string{
-			"claude",
-			"--append-system-prompt", quote(ev.SystemPrompt()),
-			quote(ev.InitialPrompt()),
-		}
 
-		sess, err := d.mgr.Spawn(ev.SessionName(), cwd, claudeArgs)
+		// Spawn a plain claude session.
+		sess, err := d.mgr.Spawn(ev.SessionName(), cwd, []string{"claude"})
 		if err != nil {
 			log.Printf("watch: spawn failed for %s: %v", key, err)
 			continue
@@ -126,6 +124,10 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		if err := d.registry.Save(); err != nil {
 			log.Printf("watch: registry save error: %v", err)
 		}
+
+		// Inject the prompt via PTY stdin (same mechanism as auto-approve).
+		prompt := ev.SystemPrompt() + "\n" + ev.InitialPrompt()
+		d.sendInput(sess.ID, prompt+"\n")
 
 		log.Printf("watch: created session %q (%s)", sess.Name, sess.ID)
 	}
@@ -173,11 +175,25 @@ func (d *Daemon) placeSessionInFolder(sessionID, folderID string) {
 	store.SaveFolder(folder)
 }
 
-// quote wraps a string in double quotes for safe command-line passing
-// through splitCommand, which respects quoted strings.
-func quote(s string) string {
-	escaped := strings.ReplaceAll(s, `"`, `\"`)
-	return `"` + escaped + `"`
+// sendInput writes text to a session's PTY stdin via the sidecar socket.
+func (d *Daemon) sendInput(sessionID, text string) {
+	socketPath := sidecar.SocketPath(sessionID)
+
+	// Wait briefly for Claude to be ready to accept input.
+	time.Sleep(2 * time.Second)
+
+	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
+	if err != nil {
+		log.Printf("watch: sendInput connect failed for %s: %v", sessionID, err)
+		return
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	codec := protocol.NewCodec(conn)
+	if err := codec.Send(protocol.Request{Action: "send_input", Text: text}); err != nil {
+		log.Printf("watch: sendInput failed for %s: %v", sessionID, err)
+	}
 }
 
 func truncate(s string, n int) string {
