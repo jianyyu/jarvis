@@ -98,6 +98,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 
 		log.Printf("watch: new event: %s — %s", ev.SessionName(), truncate(ev.Text, 60))
 
+		// Fetch full thread context before creating the session.
+		d.poller.FetchThreadContext(&ev)
+
 		cwd := d.cfg.RepoPath()
 		if cwd == "" {
 			cwd = "."
@@ -105,6 +108,7 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		claudeArgs := []string{
 			"claude",
 			"--append-system-prompt", ev.SystemPrompt(),
+			ev.InitialPrompt(),
 		}
 
 		sess, err := d.mgr.Spawn(ev.SessionName(), cwd, claudeArgs)

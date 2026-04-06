@@ -13,15 +13,16 @@ import (
 
 // SlackEvent represents an actionable Slack message.
 type SlackEvent struct {
-	ChannelID   string
-	ChannelName string
-	ThreadTS    string // thread parent timestamp (empty if top-level)
-	MessageTS   string // this message's timestamp
-	Text        string
-	SenderID    string
-	SenderName  string
-	IsDM        bool
-	Timestamp   time.Time
+	ChannelID     string
+	ChannelName   string
+	ThreadTS      string // thread parent timestamp (empty if top-level)
+	MessageTS     string // this message's timestamp
+	Text          string
+	SenderID      string
+	SenderName    string
+	IsDM          bool
+	Timestamp     time.Time
+	ThreadContext string // full thread conversation for context (populated by FetchThreadContext)
 }
 
 // ContextKey returns a unique key for deduplication in the context registry.
@@ -41,33 +42,33 @@ func (e SlackEvent) SessionName() string {
 	return fmt.Sprintf("slack: %s in %s", e.SenderName, e.ChannelName)
 }
 
-// slackPromptTemplate is the system prompt appended to Claude Code sessions
-// created by the Slack watcher. It instructs Claude to investigate and draft
-// a response without taking any external actions.
-const slackPromptTemplate = `You received a Slack message that needs your attention.
-
-**From:** %s
-**Time:** %s
-**Message:**
-> %s
-
-Your job:
-1. Analyze the message and understand what is being asked
-2. Investigate if needed (read code, check logs, etc.)
-3. Prepare a draft response
-
-**IMPORTANT:** Do NOT send any Slack messages, post any comments, or take any external-facing actions. Only investigate and prepare a draft.
-`
-
-// SystemPrompt builds the instruction for the Claude Code session.
+// SystemPrompt builds the context for the Claude Code session.
 func (e SlackEvent) SystemPrompt() string {
+	var b strings.Builder
+	b.WriteString("You received a Slack message that needs your attention.\n\n")
+
 	from := e.SenderName
 	if e.IsDM {
 		from += " (DM)"
 	} else {
 		from += " in " + e.ChannelName
 	}
-	return fmt.Sprintf(slackPromptTemplate, from, e.Timestamp.Format(time.RFC3339), e.Text)
+	b.WriteString(fmt.Sprintf("**From:** %s\n", from))
+	b.WriteString(fmt.Sprintf("**Time:** %s\n", e.Timestamp.Format(time.RFC3339)))
+	b.WriteString(fmt.Sprintf("**Message:**\n> %s\n", e.Text))
+
+	if e.ThreadContext != "" {
+		b.WriteString(fmt.Sprintf("\n**Thread context (earlier messages):**\n%s\n", e.ThreadContext))
+	}
+
+	b.WriteString("\n**IMPORTANT:** Do NOT send any Slack messages, post any comments, or take any external-facing actions. Only investigate and prepare a draft.\n")
+
+	return b.String()
+}
+
+// InitialPrompt returns the user message that kicks off the Claude session.
+func (e SlackEvent) InitialPrompt() string {
+	return "Investigate this Slack message. Read the thread context above, understand what is being asked, research if needed (check code, logs, PRs), and prepare a draft response I can send back."
 }
 
 // SlackPoller polls Slack via a local MCP server for new messages.
@@ -208,6 +209,56 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 
 	log.Printf("slack: poll found %d new events", len(events))
 	return events, nil
+}
+
+// FetchThreadContext fetches the full thread for an event (if it's in a thread).
+func (p *SlackPoller) FetchThreadContext(ev *SlackEvent) {
+	ts := ev.ThreadTS
+	if ts == "" {
+		ts = ev.MessageTS
+	}
+	if ts == "" || ev.ChannelID == "" {
+		return
+	}
+
+	result, err := p.slackAPICall("conversations.replies", map[string]interface{}{
+		"channel": ev.ChannelID,
+		"ts":      ts,
+		"limit":   20,
+	})
+	if err != nil {
+		log.Printf("slack: fetch thread %s/%s: %v", ev.ChannelID, ts, err)
+		return
+	}
+
+	// conversations.replies may be privacy-summarized (returns markdown).
+	// If it's valid JSON with messages, format them. Otherwise use the raw text.
+	var threadResp struct {
+		OK       bool `json:"ok"`
+		Messages []struct {
+			User string `json:"user"`
+			Text string `json:"text"`
+			TS   string `json:"ts"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(result), &threadResp); err == nil && threadResp.OK && len(threadResp.Messages) > 1 {
+		var lines []string
+		for _, msg := range threadResp.Messages {
+			if msg.TS == ev.MessageTS {
+				continue // skip the triggering message itself
+			}
+			lines = append(lines, fmt.Sprintf("- %s: %s", msg.User, msg.Text))
+		}
+		if len(lines) > 0 {
+			ev.ThreadContext = strings.Join(lines, "\n")
+		}
+		return
+	}
+
+	// Privacy-summarized response — use the raw text as-is
+	if len(result) > 0 && !strings.HasPrefix(result, "{") {
+		ev.ThreadContext = result
+	}
 }
 
 // Close shuts down the MCP server process.
