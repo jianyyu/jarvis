@@ -126,8 +126,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 
 		// Inject the prompt via PTY stdin (same mechanism as auto-approve).
+		// Use \r (carriage return) to submit — PTY requires \r not \n.
 		prompt := ev.SystemPrompt() + "\n" + ev.InitialPrompt()
-		d.sendInput(sess.ID, prompt+"\n")
+		d.sendInput(sess.ID, prompt+"\r")
 
 		log.Printf("watch: created session %q (%s)", sess.Name, sess.ID)
 	}
