@@ -2,14 +2,13 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"jarvis/internal/config"
-
-	"github.com/slack-go/slack"
 )
 
 // SlackEvent represents an actionable Slack message.
@@ -71,162 +70,147 @@ func (e SlackEvent) SystemPrompt() string {
 	return fmt.Sprintf(slackPromptTemplate, from, e.Timestamp.Format(time.RFC3339), e.Text)
 }
 
-// SlackPoller polls the Slack API for new messages directed at the user.
+// SlackPoller polls Slack via a local MCP server for new messages.
+// It uses search.messages which returns raw JSON (unlike conversations.history
+// which is privacy-summarized by the MCP server).
 type SlackPoller struct {
-	client *slack.Client
-	userID string
-	lastTS map[string]string // channel ID → last seen message timestamp
+	mcpCmd  string   // command to launch MCP server
+	mcpArgs []string // args for MCP server
+	userID  string
+	lastTS  string     // last seen mention timestamp
+	client  *MCPClient // lazily initialized
 }
 
-// NewSlackPoller creates a poller from watcher config.
+// NewSlackPoller creates a poller that uses the local Slack MCP server.
 func NewSlackPoller(cfg config.SlackWatcherConfig) *SlackPoller {
+	parts := strings.Fields(cfg.MCPServerCmd)
+	cmd := parts[0]
+	args := parts[1:]
 	return &SlackPoller{
-		client: slack.New(cfg.Token),
-		userID: cfg.UserID,
-		lastTS: make(map[string]string),
+		mcpCmd:  cmd,
+		mcpArgs: args,
+		userID:  cfg.UserID,
 	}
 }
 
-// Poll checks for new DMs and mentions since last poll. Returns actionable events.
+// ensureClient starts the MCP server process if not already running.
+func (p *SlackPoller) ensureClient(ctx context.Context) error {
+	if p.client != nil {
+		return nil
+	}
+	client, err := NewMCPClient(ctx, p.mcpCmd, p.mcpArgs...)
+	if err != nil {
+		return fmt.Errorf("start MCP server: %w", err)
+	}
+	p.client = client
+	return nil
+}
+
+// slackAPICall calls a Slack API endpoint via the MCP server.
+func (p *SlackPoller) slackAPICall(endpoint string, params map[string]interface{}) (string, error) {
+	args := map[string]interface{}{
+		"endpoint":  endpoint,
+		"params":    params,
+		"raw":       true,
+		"use_cache": false,
+	}
+	return p.client.CallTool("slack_read_api_call", args)
+}
+
+// Poll checks for new messages mentioning the user via search.messages.
 func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
-	var events []SlackEvent
-
-	dmEvents, err := p.pollDMs(ctx)
-	if err != nil {
-		log.Printf("slack: DM poll error: %v", err)
-	} else {
-		events = append(events, dmEvents...)
+	if err := p.ensureClient(ctx); err != nil {
+		return nil, err
 	}
 
-	mentionEvents, err := p.pollMentions(ctx)
-	if err != nil {
-		log.Printf("slack: mention poll error: %v", err)
-	} else {
-		events = append(events, mentionEvents...)
-	}
-
-	return events, nil
-}
-
-func (p *SlackPoller) pollDMs(ctx context.Context) ([]SlackEvent, error) {
-	params := &slack.GetConversationsParameters{
-		Types:           []string{"im"},
-		Limit:           100,
-		ExcludeArchived: true,
-	}
-	channels, _, err := p.client.GetConversationsContext(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("list DM channels: %w", err)
-	}
-
-	var events []SlackEvent
-	for _, ch := range channels {
-		lastSeen := p.lastTS[ch.ID]
-		histParams := &slack.GetConversationHistoryParameters{
-			ChannelID: ch.ID,
-			Limit:     10,
-			Oldest:    lastSeen,
-		}
-		hist, err := p.client.GetConversationHistoryContext(ctx, histParams)
-		if err != nil {
-			log.Printf("slack: DM history %s: %v", ch.ID, err)
-			continue
-		}
-
-		for _, msg := range hist.Messages {
-			if msg.User == p.userID {
-				continue
-			}
-			if msg.Timestamp <= lastSeen {
-				continue
-			}
-
-			userName := p.resolveUserName(ctx, msg.User)
-			events = append(events, SlackEvent{
-				ChannelID:  ch.ID,
-				MessageTS:  msg.Timestamp,
-				ThreadTS:   msg.ThreadTimestamp,
-				Text:       msg.Text,
-				SenderID:   msg.User,
-				SenderName: userName,
-				IsDM:       true,
-				Timestamp:  parseSlackTS(msg.Timestamp),
-			})
-		}
-
-		if len(hist.Messages) > 0 {
-			newest := hist.Messages[0].Timestamp
-			for _, m := range hist.Messages {
-				if m.Timestamp > newest {
-					newest = m.Timestamp
-				}
-			}
-			p.lastTS[ch.ID] = newest
-		}
-	}
-
-	return events, nil
-}
-
-func (p *SlackPoller) pollMentions(ctx context.Context) ([]SlackEvent, error) {
 	query := fmt.Sprintf("<@%s>", p.userID)
-	params := slack.SearchParameters{
-		Sort:          "timestamp",
-		SortDirection: "desc",
-		Count:         20,
-	}
-	results, err := p.client.SearchMessagesContext(ctx, query, params)
+	result, err := p.slackAPICall("search.messages", map[string]interface{}{
+		"query":    query,
+		"count":    20,
+		"sort":     "timestamp",
+		"sort_dir": "desc",
+	})
 	if err != nil {
 		return nil, fmt.Errorf("search mentions: %w", err)
 	}
 
+	var searchResult struct {
+		OK       bool `json:"ok"`
+		Messages struct {
+			Matches []struct {
+				Channel struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+					IsIM bool   `json:"is_im"`
+				} `json:"channel"`
+				User      string `json:"user"`
+				Username  string `json:"username"`
+				Text      string `json:"text"`
+				Timestamp string `json:"ts"`
+				ThreadTS  string `json:"thread_ts"`
+			} `json:"matches"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(result), &searchResult); err != nil {
+		return nil, fmt.Errorf("parse search results: %w", err)
+	}
+	if !searchResult.OK {
+		return nil, fmt.Errorf("search.messages returned ok=false")
+	}
+
 	var events []SlackEvent
-	for _, match := range results.Matches {
-		// Skip DM channels (channel IDs starting with "D")
-		if strings.HasPrefix(match.Channel.ID, "D") {
-			continue
-		}
+	for _, match := range searchResult.Messages.Matches {
+		// Skip own messages
 		if match.User == p.userID {
 			continue
 		}
-
-		lastSeen := p.lastTS["mentions:"+match.Channel.ID]
-		if match.Timestamp <= lastSeen {
+		// Skip messages we've already seen
+		if match.Timestamp <= p.lastTS {
 			continue
 		}
 
-		// Use Previous context message timestamp as thread parent if available.
-		threadTS := match.Previous.Timestamp
+		isDM := match.Channel.IsIM || strings.HasPrefix(match.Channel.ID, "D")
+		channelName := "#" + match.Channel.Name
+		if isDM {
+			channelName = ""
+		}
 
 		events = append(events, SlackEvent{
 			ChannelID:   match.Channel.ID,
-			ChannelName: "#" + match.Channel.Name,
+			ChannelName: channelName,
 			MessageTS:   match.Timestamp,
-			ThreadTS:    threadTS,
+			ThreadTS:    match.ThreadTS,
 			Text:        match.Text,
 			SenderID:    match.User,
 			SenderName:  match.Username,
-			IsDM:        false,
+			IsDM:        isDM,
 			Timestamp:   parseSlackTS(match.Timestamp),
 		})
+	}
 
-		if match.Timestamp > lastSeen {
-			p.lastTS["mentions:"+match.Channel.ID] = match.Timestamp
+	// Update last seen to newest message
+	if len(searchResult.Messages.Matches) > 0 {
+		newest := searchResult.Messages.Matches[0].Timestamp
+		for _, m := range searchResult.Messages.Matches {
+			if m.Timestamp > newest {
+				newest = m.Timestamp
+			}
+		}
+		if newest > p.lastTS {
+			p.lastTS = newest
 		}
 	}
 
+	log.Printf("slack: poll found %d new events", len(events))
 	return events, nil
 }
 
-func (p *SlackPoller) resolveUserName(ctx context.Context, userID string) string {
-	user, err := p.client.GetUserInfoContext(ctx, userID)
-	if err != nil {
-		return userID
+// Close shuts down the MCP server process.
+func (p *SlackPoller) Close() {
+	if p.client != nil {
+		p.client.Close()
+		p.client = nil
 	}
-	if user.Profile.DisplayName != "" {
-		return user.Profile.DisplayName
-	}
-	return user.RealName
 }
 
 func parseSlackTS(ts string) time.Time {

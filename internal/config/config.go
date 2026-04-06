@@ -67,10 +67,10 @@ type Policies struct {
 
 type SlackWatcherConfig struct {
 	Enabled      bool   `yaml:"enabled"`
-	Token        string `yaml:"token"`
-	PollInterval int    `yaml:"poll_interval"` // seconds
-	Folder       string `yaml:"folder"`        // folder name to place sessions in
-	UserID       string `yaml:"user_id"`       // your Slack user ID (for detecting @mentions)
+	MCPServerCmd string `yaml:"mcp_server_cmd"` // command to launch Slack MCP server
+	PollInterval int    `yaml:"poll_interval"`  // seconds
+	Folder       string `yaml:"folder"`         // folder name to place sessions in
+	UserID       string `yaml:"user_id"`        // your Slack user ID (for detecting @mentions)
 }
 
 type WatchersConfig struct {

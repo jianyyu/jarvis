@@ -24,7 +24,7 @@ type ApprovalDecision struct {
 // and MCP tool format ("Tool use" header with "(MCP)" marker).
 // Order matters: more specific patterns first to avoid false matches.
 var toolNamePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?m)^\s*(Read|Edit|Write|Bash|Grep|Glob|Agent|WebFetch|WebSearch)\b`), // new: tool name on its own line
+	regexp.MustCompile(`(?m)^\s*(Read|Edit|Write|Bash|Grep|Glob|Search|Agent|WebFetch|WebSearch)\b`), // new: tool name on its own line
 	regexp.MustCompile(`(?i)Allow\s+(\w+)\s*\?`),                                              // old: "Allow Bash? (y/n)" — require trailing ?
 }
 

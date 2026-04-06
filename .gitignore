@@ -8,3 +8,4 @@ mock_claude
 *.egg-info/
 dist/
 build/
+bin/

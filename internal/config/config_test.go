@@ -14,7 +14,7 @@ func TestLoadWatcherConfig(t *testing.T) {
 	configYAML := []byte(`watchers:
   slack:
     enabled: true
-    token: "xoxb-test-token"
+    mcp_server_cmd: "python3.10 /path/to/slack_mcp.pex"
     poll_interval: 30
     folder: "Slack"
     user_id: "U12345"
@@ -27,8 +27,8 @@ func TestLoadWatcherConfig(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 
-	if cfg.Watchers.Slack.Token != "xoxb-test-token" {
-		t.Errorf("token: got %q", cfg.Watchers.Slack.Token)
+	if cfg.Watchers.Slack.MCPServerCmd != "python3.10 /path/to/slack_mcp.pex" {
+		t.Errorf("mcp_server_cmd: got %q", cfg.Watchers.Slack.MCPServerCmd)
 	}
 	if cfg.Watchers.Slack.PollInterval != 30 {
 		t.Errorf("poll_interval: got %d", cfg.Watchers.Slack.PollInterval)

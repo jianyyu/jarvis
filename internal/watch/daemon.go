@@ -26,8 +26,8 @@ func NewDaemon(cfg *config.Config) (*Daemon, error) {
 	if !cfg.Watchers.Slack.Enabled {
 		return nil, fmt.Errorf("slack watcher not enabled in config")
 	}
-	if cfg.Watchers.Slack.Token == "" {
-		return nil, fmt.Errorf("slack watcher token not configured")
+	if cfg.Watchers.Slack.MCPServerCmd == "" {
+		return nil, fmt.Errorf("slack watcher mcp_server_cmd not configured")
 	}
 	if cfg.Watchers.Slack.UserID == "" {
 		return nil, fmt.Errorf("slack watcher user_id not configured")
@@ -74,6 +74,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			log.Println("watch: shutting down")
+			d.poller.Close()
 			return nil
 		case <-ticker.C:
 			d.pollOnce(ctx)
