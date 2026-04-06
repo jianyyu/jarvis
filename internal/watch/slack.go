@@ -42,27 +42,33 @@ func (e SlackEvent) SessionName() string {
 	return fmt.Sprintf("slack: %s in %s", e.SenderName, e.ChannelName)
 }
 
+// slackPromptTemplate is the system prompt appended to Claude Code sessions
+// created by the Slack watcher. It instructs Claude to investigate and draft
+// a response without taking any external actions.
+const slackPromptTemplate = `You received a Slack message that needs your attention.
+
+**From:** %s
+**Time:** %s
+**Message:**
+> %s
+
+Your job:
+1. Analyze the message and understand what is being asked
+2. Investigate if needed (read code, check logs, etc.)
+3. Prepare a draft response
+
+**IMPORTANT:** Do NOT send any Slack messages, post any comments, or take any external-facing actions. Only investigate and prepare a draft.
+`
+
 // SystemPrompt builds the instruction for the Claude Code session.
 func (e SlackEvent) SystemPrompt() string {
-	var b strings.Builder
-	b.WriteString("You received a Slack message that needs your attention.\n\n")
-
+	from := e.SenderName
 	if e.IsDM {
-		b.WriteString(fmt.Sprintf("**From:** %s (DM)\n", e.SenderName))
+		from += " (DM)"
 	} else {
-		b.WriteString(fmt.Sprintf("**From:** %s in %s\n", e.SenderName, e.ChannelName))
+		from += " in " + e.ChannelName
 	}
-	b.WriteString(fmt.Sprintf("**Time:** %s\n", e.Timestamp.Format(time.RFC3339)))
-	b.WriteString(fmt.Sprintf("**Message:**\n> %s\n\n", e.Text))
-
-	b.WriteString("Your job:\n")
-	b.WriteString("1. Analyze the message and understand what is being asked\n")
-	b.WriteString("2. Investigate if needed (read code, check logs, etc.)\n")
-	b.WriteString("3. Prepare a draft response\n\n")
-	b.WriteString("**IMPORTANT:** Do NOT send any Slack messages, post any comments, ")
-	b.WriteString("or take any external-facing actions. Only investigate and prepare a draft.\n")
-
-	return b.String()
+	return fmt.Sprintf(slackPromptTemplate, from, e.Timestamp.Format(time.RFC3339), e.Text)
 }
 
 // SlackPoller polls the Slack API for new messages directed at the user.

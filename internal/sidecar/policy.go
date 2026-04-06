@@ -19,24 +19,44 @@ type ApprovalDecision struct {
 	Rule   *config.ApprovalRule // the rule that matched, nil if no match
 }
 
-// toolNamePattern extracts the tool name from "Allow ToolName?" prompts.
-// Handles ANSI escape codes that may be embedded in PTY output.
-var toolNamePattern = regexp.MustCompile(`(?i)Allow\s+(\w+)`)
+// toolNamePatterns extract the tool name from approval prompts.
+// Handles old format ("Allow Bash?"), new format (tool name on its own line),
+// and MCP tool format ("Tool use" header with "(MCP)" marker).
+// Order matters: more specific patterns first to avoid false matches.
+var toolNamePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?m)^\s*(Read|Edit|Write|Bash|Grep|Glob|Agent|WebFetch|WebSearch)\b`), // new: tool name on its own line
+	regexp.MustCompile(`(?i)Allow\s+(\w+)\s*\?`),                                              // old: "Allow Bash? (y/n)" — require trailing ?
+}
+
+// mcpToolPattern matches MCP tool prompts like "Tool use\n\n  claude.ai Slack - Search..."
+// and extracts a normalized tool name for policy matching.
+var mcpToolPattern = regexp.MustCompile(`\(MCP\)`)
 
 // ExtractToolName pulls the tool name from an approval prompt string.
 // Returns empty string if no tool name found.
+// For MCP tools, returns "mcp" as the tool name (matched via "mcp__*" or "mcp" in policy).
 //
 // Examples:
 //
 //	"Allow Bash? (y/n)"         → "Bash"
 //	"Allow Read? (y/n)"         → "Read"
 //	"\x1b[1mAllow Edit?\x1b[0m" → "Edit"
+//	"Read file\n\n  ..."        → "Read"   (new numbered-menu format)
+//	"Tool use\n\n  ...(MCP)..." → "mcp"    (MCP tool)
 func ExtractToolName(detail string) string {
 	// Strip ANSI escape sequences for cleaner matching.
 	cleaned := stripANSI(detail)
-	m := toolNamePattern.FindStringSubmatch(cleaned)
-	if len(m) >= 2 {
-		return m[1]
+
+	// Check for MCP tools first — they show as "Tool use" with "(MCP)" marker.
+	if mcpToolPattern.MatchString(cleaned) {
+		return "mcp"
+	}
+
+	for _, p := range toolNamePatterns {
+		m := p.FindStringSubmatch(cleaned)
+		if len(m) >= 2 {
+			return m[1]
+		}
 	}
 	return ""
 }
@@ -85,11 +105,17 @@ func EvaluateApproval(policies []config.ApprovalRule, detail string) ApprovalDec
 }
 
 // matchesTool checks if toolName matches any entry in the rule's tool list.
-// Comparison is case-insensitive.
+// Comparison is case-insensitive. Supports trailing wildcard patterns like "mcp__*".
 func matchesTool(tools config.ToolMatch, toolName string) bool {
 	lower := strings.ToLower(toolName)
 	for _, t := range tools {
-		if strings.ToLower(t) == lower {
+		pattern := strings.ToLower(t)
+		if strings.HasSuffix(pattern, "*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		} else if pattern == lower {
 			return true
 		}
 	}
