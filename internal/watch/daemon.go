@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"jarvis/internal/config"
@@ -107,8 +108,8 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 		claudeArgs := []string{
 			"claude",
-			"--append-system-prompt", ev.SystemPrompt(),
-			ev.InitialPrompt(),
+			"--append-system-prompt", quote(ev.SystemPrompt()),
+			quote(ev.InitialPrompt()),
 		}
 
 		sess, err := d.mgr.Spawn(ev.SessionName(), cwd, claudeArgs)
@@ -170,6 +171,13 @@ func (d *Daemon) placeSessionInFolder(sessionID, folderID string) {
 	}
 	folder.Children = append(folder.Children, model.ChildRef{Type: "session", ID: sessionID})
 	store.SaveFolder(folder)
+}
+
+// quote wraps a string in double quotes for safe command-line passing
+// through splitCommand, which respects quoted strings.
+func quote(s string) string {
+	escaped := strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + escaped + `"`
 }
 
 func truncate(s string, n int) string {
