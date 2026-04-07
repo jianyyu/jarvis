@@ -67,11 +67,12 @@ type Policies struct {
 
 type SlackWatcherConfig struct {
 	Enabled      bool     `yaml:"enabled"`
-	MCPServerCmd string   `yaml:"mcp_server_cmd"` // command to launch Slack MCP server
-	PollInterval int      `yaml:"poll_interval"`  // seconds
-	Folder       string   `yaml:"folder"`         // folder name to place sessions in
-	UserID       string   `yaml:"user_id"`        // your Slack user ID (for detecting @mentions)
-	Keywords     []string `yaml:"keywords,omitempty"` // additional search queries (e.g. "clean room", "marketplace")
+	MCPServerCmd string   `yaml:"mcp_server_cmd"`    // command to launch Slack MCP server
+	PollInterval int      `yaml:"poll_interval"`     // seconds
+	Folder       string   `yaml:"folder"`            // folder name to place sessions in
+	UserID       string   `yaml:"user_id"`           // your Slack user ID (for detecting @mentions)
+	Keywords     []string `yaml:"keywords,omitempty"` // additional search queries
+	IgnoreBots   []string `yaml:"ignore_bots,omitempty"` // bot usernames to skip
 }
 
 type WatchersConfig struct {

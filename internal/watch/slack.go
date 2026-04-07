@@ -57,12 +57,13 @@ func (e SlackEvent) InitialPrompt() string {
 // It uses search.messages which returns raw JSON (unlike conversations.history
 // which is privacy-summarized by the MCP server).
 type SlackPoller struct {
-	mcpCmd   string   // command to launch MCP server
-	mcpArgs  []string // args for MCP server
-	userID   string
-	keywords []string   // additional search queries
-	lastTS   string     // last seen mention timestamp
-	client   *MCPClient // lazily initialized
+	mcpCmd     string   // command to launch MCP server
+	mcpArgs    []string // args for MCP server
+	userID     string
+	keywords   []string   // additional search queries
+	ignoreBots map[string]bool // bot usernames to skip (lowercased)
+	lastTS     string     // last seen mention timestamp
+	client     *MCPClient // lazily initialized
 }
 
 // NewSlackPoller creates a poller that uses the local Slack MCP server.
@@ -75,12 +76,17 @@ func NewSlackPoller(cfg config.SlackWatcherConfig, lastTS string) *SlackPoller {
 	if lastTS == "" {
 		lastTS = fmt.Sprintf("%d.000000", time.Now().Unix())
 	}
+	botSet := make(map[string]bool)
+	for _, b := range cfg.IgnoreBots {
+		botSet[strings.ToLower(b)] = true
+	}
 	return &SlackPoller{
-		mcpCmd:   cmd,
-		mcpArgs:  args,
-		userID:   cfg.UserID,
-		keywords: cfg.Keywords,
-		lastTS:   lastTS,
+		mcpCmd:     cmd,
+		mcpArgs:    args,
+		userID:     cfg.UserID,
+		keywords:   cfg.Keywords,
+		ignoreBots: botSet,
+		lastTS:     lastTS,
 	}
 }
 
@@ -196,6 +202,9 @@ func (p *SlackPoller) searchMessages(query string) ([]SlackEvent, error) {
 			continue
 		}
 		if match.Timestamp <= p.lastTS {
+			continue
+		}
+		if p.ignoreBots[strings.ToLower(match.Username)] {
 			continue
 		}
 
