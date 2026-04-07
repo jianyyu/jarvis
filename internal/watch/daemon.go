@@ -116,9 +116,6 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 
 		log.Printf("watch: new event: %s — %s", ev.SessionName(), truncate(ev.Text, 60))
 
-		// Fetch full thread context before creating the session.
-		d.poller.FetchThreadContext(&ev)
-
 		cwd := d.cfg.RepoPath()
 		if cwd == "" {
 			cwd = "."
@@ -141,10 +138,7 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 
 		// Inject the prompt via PTY stdin, then submit with \r separately.
-		// Sending text + \r in one write doesn't work — Claude Code treats
-		// the \r as part of the pasted text. Split into two writes with a delay.
-		prompt := ev.SystemPrompt() + "\n" + ev.InitialPrompt()
-		d.sendInput(sess.ID, prompt)
+		d.sendInput(sess.ID, ev.InitialPrompt())
 		time.Sleep(500 * time.Millisecond)
 		d.sendInput(sess.ID, "\r")
 

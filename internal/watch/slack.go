@@ -22,6 +22,7 @@ type SlackEvent struct {
 	SenderName    string
 	IsDM          bool
 	Timestamp     time.Time
+	Permalink     string // Slack message link
 	ThreadContext string // full thread conversation for context (populated by FetchThreadContext)
 }
 
@@ -42,33 +43,9 @@ func (e SlackEvent) SessionName() string {
 	return fmt.Sprintf("slack: %s in %s", e.SenderName, e.ChannelName)
 }
 
-// SystemPrompt builds the context for the Claude Code session.
-func (e SlackEvent) SystemPrompt() string {
-	var b strings.Builder
-	b.WriteString("You received a Slack message that needs your attention.\n\n")
-
-	from := e.SenderName
-	if e.IsDM {
-		from += " (DM)"
-	} else {
-		from += " in " + e.ChannelName
-	}
-	b.WriteString(fmt.Sprintf("**From:** %s\n", from))
-	b.WriteString(fmt.Sprintf("**Time:** %s\n", e.Timestamp.Format(time.RFC3339)))
-	b.WriteString(fmt.Sprintf("**Message:**\n> %s\n", e.Text))
-
-	if e.ThreadContext != "" {
-		b.WriteString(fmt.Sprintf("\n**Thread context (earlier messages):**\n%s\n", e.ThreadContext))
-	}
-
-	b.WriteString("\n**IMPORTANT:** Do NOT send any Slack messages, post any comments, or take any external-facing actions. Only investigate and prepare a draft.\n")
-
-	return b.String()
-}
-
 // InitialPrompt returns the user message that kicks off the Claude session.
 func (e SlackEvent) InitialPrompt() string {
-	return "Investigate this Slack message. Read the thread context above, understand what is being asked, research if needed (check code, logs, PRs), and prepare a draft response I can send back."
+	return fmt.Sprintf("Please look at this Slack message and investigate whatever is necessary: %s\n\nDo NOT send any Slack messages, post any comments, or take any external-facing actions. Only investigate and prepare a draft response.", e.Permalink)
 }
 
 // SlackPoller polls Slack via a local MCP server for new messages.
@@ -160,6 +137,7 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 				Text      string `json:"text"`
 				Timestamp string `json:"ts"`
 				ThreadTS  string `json:"thread_ts"`
+				Permalink string `json:"permalink"`
 			} `json:"matches"`
 		} `json:"messages"`
 	}
@@ -197,6 +175,7 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 			SenderName:  match.Username,
 			IsDM:        isDM,
 			Timestamp:   parseSlackTS(match.Timestamp),
+			Permalink:   match.Permalink,
 		})
 	}
 
