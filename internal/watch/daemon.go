@@ -22,6 +22,7 @@ type Daemon struct {
 	registry *Registry
 	poller   *SlackPoller
 	folderID string // cached folder ID for placing sessions
+	polling  bool   // true while a poll is in progress (skip overlapping ticks)
 }
 
 // NewDaemon creates a watcher daemon from config.
@@ -45,7 +46,7 @@ func NewDaemon(cfg *config.Config) (*Daemon, error) {
 		cfg:      cfg,
 		mgr:      session.NewManager(cfg),
 		registry: reg,
-		poller:   NewSlackPoller(cfg.Watchers.Slack),
+		poller:   NewSlackPoller(cfg.Watchers.Slack, reg.GetLastPollTS()),
 	}, nil
 }
 
@@ -86,6 +87,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) pollOnce(ctx context.Context) {
+	if d.polling {
+		log.Printf("watch: skipping poll — previous poll still running")
+		return
+	}
+	d.polling = true
+	defer func() { d.polling = false }()
+
 	events, err := d.poller.Poll(ctx)
 	if err != nil {
 		log.Printf("watch: poll error: %v", err)
@@ -131,6 +139,12 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		d.sendInput(sess.ID, prompt+"\r")
 
 		log.Printf("watch: created session %q (%s)", sess.Name, sess.ID)
+	}
+
+	// Persist the poll checkpoint so restarts pick up from here.
+	if ts := d.poller.LastTS(); ts != "" {
+		d.registry.SetLastPollTS(ts)
+		d.registry.Save()
 	}
 }
 

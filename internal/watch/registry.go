@@ -15,8 +15,9 @@ import (
 // Registry maps external context keys (e.g. "slack:C123/p456") to session IDs.
 // It persists to ~/.jarvis/context_registry.yaml for recovery across restarts.
 type Registry struct {
-	mu      sync.Mutex
-	entries map[string]string // context key → session ID
+	mu         sync.Mutex
+	entries    map[string]string // context key → session ID
+	lastPollTS string            // persisted Slack timestamp of newest seen message
 }
 
 func NewRegistry() *Registry {
@@ -41,12 +42,25 @@ func (r *Registry) Lookup(contextKey string) (string, bool) {
 }
 
 type registryFile struct {
-	Contexts map[string]string `yaml:"contexts"`
+	Contexts   map[string]string `yaml:"contexts"`
+	LastPollTS string            `yaml:"last_poll_ts,omitempty"` // Slack timestamp of newest seen message
+}
+
+func (r *Registry) SetLastPollTS(ts string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastPollTS = ts
+}
+
+func (r *Registry) GetLastPollTS() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastPollTS
 }
 
 func (r *Registry) Save() error {
 	r.mu.Lock()
-	data, err := yaml.Marshal(registryFile{Contexts: r.entries})
+	data, err := yaml.Marshal(registryFile{Contexts: r.entries, LastPollTS: r.lastPollTS})
 	r.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("marshal registry: %w", err)
@@ -71,5 +85,6 @@ func (r *Registry) Load() error {
 	if f.Contexts != nil {
 		r.entries = f.Contexts
 	}
+	r.lastPollTS = f.LastPollTS
 	return nil
 }

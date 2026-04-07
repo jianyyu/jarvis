@@ -83,20 +83,26 @@ type SlackPoller struct {
 }
 
 // NewSlackPoller creates a poller that uses the local Slack MCP server.
-// It initializes lastTS to "now" so only messages arriving after the watcher
-// starts are picked up (avoids processing the entire history on first run).
-func NewSlackPoller(cfg config.SlackWatcherConfig) *SlackPoller {
+// lastTS should be provided from the persisted registry; if empty, defaults
+// to "now" so only messages arriving after the watcher starts are picked up.
+func NewSlackPoller(cfg config.SlackWatcherConfig, lastTS string) *SlackPoller {
 	parts := strings.Fields(cfg.MCPServerCmd)
 	cmd := parts[0]
 	args := parts[1:]
-	// Set lastTS to current time so we only see new messages from now on.
-	now := fmt.Sprintf("%d.000000", time.Now().Unix())
+	if lastTS == "" {
+		lastTS = fmt.Sprintf("%d.000000", time.Now().Unix())
+	}
 	return &SlackPoller{
 		mcpCmd:  cmd,
 		mcpArgs: args,
 		userID:  cfg.UserID,
-		lastTS:  now,
+		lastTS:  lastTS,
 	}
+}
+
+// LastTS returns the timestamp of the newest message seen.
+func (p *SlackPoller) LastTS() string {
+	return p.lastTS
 }
 
 // ensureClient starts the MCP server process if not already running.
