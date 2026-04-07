@@ -108,7 +108,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 			log.Printf("watch: follow-up in existing session %s — %s", sessID, truncate(ev.Text, 60))
 			newContext := fmt.Sprintf("\n[New message from %s at %s]:\n> %s",
 				ev.SenderName, ev.Timestamp.Format(time.RFC3339), ev.Text)
-			d.sendInput(sessID, newContext+"\r")
+			d.sendInput(sessID, newContext)
+			time.Sleep(500 * time.Millisecond)
+			d.sendInput(sessID, "\r")
 			continue
 		}
 
@@ -138,10 +140,13 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 			log.Printf("watch: registry save error: %v", err)
 		}
 
-		// Inject the prompt via PTY stdin (same mechanism as auto-approve).
-		// Use \r (carriage return) to submit — PTY requires \r not \n.
+		// Inject the prompt via PTY stdin, then submit with \r separately.
+		// Sending text + \r in one write doesn't work — Claude Code treats
+		// the \r as part of the pasted text. Split into two writes with a delay.
 		prompt := ev.SystemPrompt() + "\n" + ev.InitialPrompt()
-		d.sendInput(sess.ID, prompt+"\r")
+		d.sendInput(sess.ID, prompt)
+		time.Sleep(500 * time.Millisecond)
+		d.sendInput(sess.ID, "\r")
 
 		log.Printf("watch: created session %q (%s)", sess.Name, sess.ID)
 	}
