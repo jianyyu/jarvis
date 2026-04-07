@@ -25,7 +25,7 @@ func NewRegistry() *Registry {
 }
 
 func registryPath() string {
-	return filepath.Join(store.JarvisHome(), "context_registry.yaml")
+	return filepath.Join(store.JarvisHome(), "watch", "context_registry.yaml")
 }
 
 func (r *Registry) Register(contextKey, sessionID string) {
