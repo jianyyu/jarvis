@@ -103,7 +103,12 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	for _, ev := range events {
 		key := ev.ContextKey()
 
-		if _, found := d.registry.Lookup(key); found {
+		// If we already have a session for this thread, inject the new message.
+		if sessID, found := d.registry.Lookup(key); found {
+			log.Printf("watch: follow-up in existing session %s — %s", sessID, truncate(ev.Text, 60))
+			newContext := fmt.Sprintf("\n[New message from %s at %s]:\n> %s",
+				ev.SenderName, ev.Timestamp.Format(time.RFC3339), ev.Text)
+			d.sendInput(sessID, newContext+"\r")
 			continue
 		}
 
