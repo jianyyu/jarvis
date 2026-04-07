@@ -52,11 +52,12 @@ func (e SlackEvent) InitialPrompt() string {
 // It uses search.messages which returns raw JSON (unlike conversations.history
 // which is privacy-summarized by the MCP server).
 type SlackPoller struct {
-	mcpCmd  string   // command to launch MCP server
-	mcpArgs []string // args for MCP server
-	userID  string
-	lastTS  string     // last seen mention timestamp
-	client  *MCPClient // lazily initialized
+	mcpCmd   string   // command to launch MCP server
+	mcpArgs  []string // args for MCP server
+	userID   string
+	keywords []string   // additional search queries
+	lastTS   string     // last seen mention timestamp
+	client   *MCPClient // lazily initialized
 }
 
 // NewSlackPoller creates a poller that uses the local Slack MCP server.
@@ -70,10 +71,11 @@ func NewSlackPoller(cfg config.SlackWatcherConfig, lastTS string) *SlackPoller {
 		lastTS = fmt.Sprintf("%d.000000", time.Now().Unix())
 	}
 	return &SlackPoller{
-		mcpCmd:  cmd,
-		mcpArgs: args,
-		userID:  cfg.UserID,
-		lastTS:  lastTS,
+		mcpCmd:   cmd,
+		mcpArgs:  args,
+		userID:   cfg.UserID,
+		keywords: cfg.Keywords,
+		lastTS:   lastTS,
 	}
 }
 
@@ -106,13 +108,44 @@ func (p *SlackPoller) slackAPICall(endpoint string, params map[string]interface{
 	return p.client.CallTool("slack_read_api_call", args)
 }
 
-// Poll checks for new messages mentioning the user via search.messages.
+// Poll checks for new messages via multiple search queries:
+// 1. @mentions of the user
+// 2. Each configured keyword (e.g. "clean room", "marketplace")
+// Results are deduped by message timestamp.
 func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 	if err := p.ensureClient(ctx); err != nil {
 		return nil, err
 	}
 
-	query := fmt.Sprintf("<@%s>", p.userID)
+	// Build list of queries: mentions first, then keywords.
+	queries := []string{fmt.Sprintf("<@%s>", p.userID)}
+	queries = append(queries, p.keywords...)
+
+	seen := make(map[string]bool) // dedup by message ts
+	var events []SlackEvent
+
+	for _, query := range queries {
+		matches, err := p.searchMessages(query)
+		if err != nil {
+			log.Printf("slack: search %q error: %v", query, err)
+			continue
+		}
+
+		for _, ev := range matches {
+			if seen[ev.MessageTS] {
+				continue
+			}
+			seen[ev.MessageTS] = true
+			events = append(events, ev)
+		}
+	}
+
+	log.Printf("slack: poll found %d new events (%d queries)", len(events), len(queries))
+	return events, nil
+}
+
+// searchMessages runs a single search.messages query and returns new events.
+func (p *SlackPoller) searchMessages(query string) ([]SlackEvent, error) {
 	result, err := p.slackAPICall("search.messages", map[string]interface{}{
 		"query":    query,
 		"count":    20,
@@ -120,7 +153,7 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 		"sort_dir": "desc",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("search mentions: %w", err)
+		return nil, fmt.Errorf("search %q: %w", query, err)
 	}
 
 	var searchResult struct {
@@ -150,11 +183,9 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 
 	var events []SlackEvent
 	for _, match := range searchResult.Messages.Matches {
-		// Skip own messages
 		if match.User == p.userID {
 			continue
 		}
-		// Skip messages we've already seen
 		if match.Timestamp <= p.lastTS {
 			continue
 		}
@@ -180,19 +211,12 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 	}
 
 	// Update last seen to newest message
-	if len(searchResult.Messages.Matches) > 0 {
-		newest := searchResult.Messages.Matches[0].Timestamp
-		for _, m := range searchResult.Messages.Matches {
-			if m.Timestamp > newest {
-				newest = m.Timestamp
-			}
-		}
-		if newest > p.lastTS {
-			p.lastTS = newest
+	for _, ev := range events {
+		if ev.MessageTS > p.lastTS {
+			p.lastTS = ev.MessageTS
 		}
 	}
 
-	log.Printf("slack: poll found %d new events", len(events))
 	return events, nil
 }
 
