@@ -103,15 +103,22 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	for _, ev := range events {
 		key := ev.ContextKey()
 
-		// If we already have a session for this thread, inject the new message.
+		// If we already have a session for this thread, check it still exists.
 		if sessID, found := d.registry.Lookup(key); found {
-			log.Printf("watch: follow-up in existing session %s — %s", sessID, truncate(ev.Text, 60))
-			newContext := fmt.Sprintf("\n[New message from %s at %s]:\n> %s",
-				ev.SenderName, ev.Timestamp.Format(time.RFC3339), ev.Text)
-			d.sendInput(sessID, newContext)
-			time.Sleep(500 * time.Millisecond)
-			d.sendInput(sessID, "\r")
-			continue
+			if _, err := store.GetSession(sessID); err != nil {
+				// Session was deleted — remove stale registry entry so we recreate it.
+				log.Printf("watch: session %s deleted, removing stale registry entry for %s", sessID, key)
+				d.registry.Unregister(key)
+			} else {
+				// Session exists — inject the new message as follow-up.
+				log.Printf("watch: follow-up in existing session %s — %s", sessID, truncate(ev.Text, 60))
+				newContext := fmt.Sprintf("\n[New message from %s at %s]:\n> %s",
+					ev.SenderName, ev.Timestamp.Format(time.RFC3339), ev.Text)
+				d.sendInput(sessID, newContext)
+				time.Sleep(500 * time.Millisecond)
+				d.sendInput(sessID, "\r")
+				continue
+			}
 		}
 
 		log.Printf("watch: new event: %s — %s", ev.SessionName(), truncate(ev.Text, 60))

@@ -44,6 +44,12 @@ func (r *Registry) Lookup(contextKey string) (string, bool) {
 	return id, ok
 }
 
+func (r *Registry) Unregister(contextKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.entries, contextKey)
+}
+
 type registryFile struct {
 	Contexts   map[string]string `yaml:"contexts"`
 	LastPollTS string            `yaml:"last_poll_ts,omitempty"` // Slack timestamp of newest seen message
