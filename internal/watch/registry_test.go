@@ -11,7 +11,7 @@ func TestRegistryRoundTrip(t *testing.T) {
 	os.Setenv("JARVIS_HOME", tmp)
 	defer os.Unsetenv("JARVIS_HOME")
 
-	reg := NewRegistry()
+	reg := NewRegistry("slack")
 
 	reg.Register("slack:C123/p456", "sess-abc")
 
@@ -27,7 +27,7 @@ func TestRegistryRoundTrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	reg2 := NewRegistry()
+	reg2 := NewRegistry("slack")
 	if err := reg2.Load(); err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestRegistryLookupMiss(t *testing.T) {
 	os.Setenv("JARVIS_HOME", tmp)
 	defer os.Unsetenv("JARVIS_HOME")
 
-	reg := NewRegistry()
+	reg := NewRegistry("slack")
 	_, found := reg.Lookup("slack:nonexistent")
 	if found {
 		t.Error("should not find unregistered context")
@@ -58,7 +58,7 @@ func TestRegistryLoadEmpty(t *testing.T) {
 	os.Setenv("JARVIS_HOME", tmp)
 	defer os.Unsetenv("JARVIS_HOME")
 
-	reg := NewRegistry()
+	reg := NewRegistry("slack")
 	if err := reg.Load(); err != nil {
 		t.Fatalf("load empty: %v", err)
 	}

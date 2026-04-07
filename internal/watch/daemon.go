@@ -37,7 +37,7 @@ func NewDaemon(cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("slack watcher user_id not configured")
 	}
 
-	reg := NewRegistry()
+	reg := NewRegistry("slack")
 	if err := reg.Load(); err != nil {
 		log.Printf("watch: registry load error (starting fresh): %v", err)
 	}

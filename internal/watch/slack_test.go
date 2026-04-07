@@ -2,7 +2,6 @@ package watch
 
 import (
 	"testing"
-	"time"
 )
 
 func TestSlackEventKey(t *testing.T) {
@@ -57,26 +56,19 @@ func TestSlackEventSessionName(t *testing.T) {
 	}
 }
 
-func TestSlackEventSystemPrompt(t *testing.T) {
+func TestSlackEventInitialPrompt(t *testing.T) {
 	ev := SlackEvent{
 		SenderName:  "alice",
 		ChannelName: "#oncall",
-		Text:        "can you check the kafka lag?",
-		Timestamp:   time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC),
+		Permalink:   "https://example.slack.com/archives/C123/p456",
 	}
 
-	prompt := ev.SystemPrompt()
+	prompt := ev.InitialPrompt()
 	if prompt == "" {
 		t.Fatal("prompt should not be empty")
 	}
-	if !containsStr(prompt, "alice") {
-		t.Error("prompt should mention sender")
-	}
-	if !containsStr(prompt, "#oncall") {
-		t.Error("prompt should mention channel")
-	}
-	if !containsStr(prompt, "kafka lag") {
-		t.Error("prompt should include message text")
+	if !containsStr(prompt, "https://example.slack.com/archives/C123/p456") {
+		t.Error("prompt should include permalink")
 	}
 	if !containsStr(prompt, "Do NOT") {
 		t.Error("prompt should include safety guardrail")

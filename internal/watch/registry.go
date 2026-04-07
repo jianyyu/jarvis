@@ -16,16 +16,19 @@ import (
 // It persists to ~/.jarvis/context_registry.yaml for recovery across restarts.
 type Registry struct {
 	mu         sync.Mutex
+	name       string            // watcher name (e.g. "slack", "github", "pagerduty")
 	entries    map[string]string // context key → session ID
-	lastPollTS string            // persisted Slack timestamp of newest seen message
+	lastPollTS string            // persisted timestamp of newest seen message
 }
 
-func NewRegistry() *Registry {
-	return &Registry{entries: make(map[string]string)}
+func NewRegistry(watcherName string) *Registry {
+	return &Registry{name: watcherName, entries: make(map[string]string)}
 }
 
-func registryPath() string {
-	return filepath.Join(store.JarvisHome(), "watch", "context_registry.yaml")
+// registryPath returns the path for a watcher-specific registry file.
+// Each watcher type (slack, github, pagerduty) gets its own directory.
+func registryPath(watcherName string) string {
+	return filepath.Join(store.JarvisHome(), "watch", watcherName, "registry.yaml")
 }
 
 func (r *Registry) Register(contextKey, sessionID string) {
@@ -65,11 +68,11 @@ func (r *Registry) Save() error {
 	if err != nil {
 		return fmt.Errorf("marshal registry: %w", err)
 	}
-	return store.WriteAtomic(registryPath(), data)
+	return store.WriteAtomic(registryPath(r.name), data)
 }
 
 func (r *Registry) Load() error {
-	data, err := os.ReadFile(registryPath())
+	data, err := os.ReadFile(registryPath(r.name))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
