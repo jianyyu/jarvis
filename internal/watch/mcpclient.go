@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // MCPClient speaks JSON-RPC over stdio to a local MCP server process.
@@ -68,7 +70,9 @@ func NewMCPClient(ctx context.Context, command string, args ...string) (*MCPClie
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-	cmd.Stderr = nil // discard stderr
+	// Pipe stderr to /dev/null via an open file to prevent buffer blocking.
+	devNull, _ := os.Open(os.DevNull)
+	cmd.Stderr = devNull
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start MCP server: %w", err)
@@ -169,10 +173,18 @@ func (c *MCPClient) call(method string, params interface{}, result interface{}) 
 		return fmt.Errorf("write request: %w", err)
 	}
 
-	// Wait for response
-	raw, ok := <-ch
-	if !ok {
-		return fmt.Errorf("connection closed")
+	// Wait for response with timeout.
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	var raw json.RawMessage
+	var ok bool
+	select {
+	case raw, ok = <-ch:
+		if !ok {
+			return fmt.Errorf("connection closed")
+		}
+	case <-timer.C:
+		return fmt.Errorf("timeout waiting for response to %s", method)
 	}
 
 	if result != nil {
