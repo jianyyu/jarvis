@@ -110,15 +110,19 @@ func (p *SlackPoller) slackAPICall(endpoint string, params map[string]interface{
 
 // Poll checks for new messages via multiple search queries:
 // 1. @mentions of the user
-// 2. Each configured keyword (e.g. "clean room", "marketplace")
+// 2. DMs sent to the user
+// 3. Each configured keyword (e.g. "in:#channel-name")
 // Results are deduped by message timestamp.
 func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 	if err := p.ensureClient(ctx); err != nil {
 		return nil, err
 	}
 
-	// Build list of queries: mentions first, then keywords.
-	queries := []string{fmt.Sprintf("<@%s>", p.userID)}
+	// Build list of queries: mentions, DMs, then keywords.
+	queries := []string{
+		fmt.Sprintf("<@%s>", p.userID),
+		fmt.Sprintf("to:<@%s>", p.userID),
+	}
 	queries = append(queries, p.keywords...)
 
 	seen := make(map[string]bool) // dedup by message ts
