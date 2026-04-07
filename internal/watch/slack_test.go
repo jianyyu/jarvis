@@ -30,8 +30,9 @@ func TestSlackEventKeyDM(t *testing.T) {
 	}
 
 	key := ev.ContextKey()
-	if key != "slack:D456/1234567890.000001" {
-		t.Errorf("context key: got %q", key)
+	// DMs use channel ID only (one session per DM conversation)
+	if key != "slack:D456" {
+		t.Errorf("context key: got %q, want %q", key, "slack:D456")
 	}
 }
 

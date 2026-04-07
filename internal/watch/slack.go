@@ -27,7 +27,12 @@ type SlackEvent struct {
 }
 
 // ContextKey returns a unique key for deduplication in the context registry.
+// For DMs, the key is just the channel ID (one session per DM conversation).
+// For channel messages, the key includes the thread timestamp.
 func (e SlackEvent) ContextKey() string {
+	if e.IsDM {
+		return fmt.Sprintf("slack:%s", e.ChannelID)
+	}
 	ts := e.ThreadTS
 	if ts == "" {
 		ts = e.MessageTS
@@ -200,6 +205,11 @@ func (p *SlackPoller) searchMessages(query string) ([]SlackEvent, error) {
 			channelName = ""
 		}
 
+		senderName := match.Username
+		if senderName == "" && match.User != "" {
+			senderName = p.resolveUserName(match.User)
+		}
+
 		events = append(events, SlackEvent{
 			ChannelID:   match.Channel.ID,
 			ChannelName: channelName,
@@ -207,7 +217,7 @@ func (p *SlackPoller) searchMessages(query string) ([]SlackEvent, error) {
 			ThreadTS:    match.ThreadTS,
 			Text:        match.Text,
 			SenderID:    match.User,
-			SenderName:  match.Username,
+			SenderName:  senderName,
 			IsDM:        isDM,
 			Timestamp:   parseSlackTS(match.Timestamp),
 			Permalink:   match.Permalink,
@@ -222,6 +232,35 @@ func (p *SlackPoller) searchMessages(query string) ([]SlackEvent, error) {
 	}
 
 	return events, nil
+}
+
+// resolveUserName looks up a user's display name by ID.
+func (p *SlackPoller) resolveUserName(userID string) string {
+	result, err := p.slackAPICall("users.info", map[string]interface{}{
+		"user": userID,
+	})
+	if err != nil {
+		return userID
+	}
+	var userInfo struct {
+		OK   bool `json:"ok"`
+		User struct {
+			RealName string `json:"real_name"`
+			Profile  struct {
+				DisplayName string `json:"display_name"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal([]byte(result), &userInfo); err != nil {
+		return userID
+	}
+	if userInfo.User.Profile.DisplayName != "" {
+		return userInfo.User.Profile.DisplayName
+	}
+	if userInfo.User.RealName != "" {
+		return userInfo.User.RealName
+	}
+	return userID
 }
 
 // FetchThreadContext fetches the full thread for an event (if it's in a thread).
