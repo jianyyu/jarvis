@@ -144,6 +144,12 @@ func (p *SlackPoller) Poll(ctx context.Context) ([]SlackEvent, error) {
 		matches, err := p.searchMessages(query)
 		if err != nil {
 			log.Printf("slack: search %q error: %v", query, err)
+			// Restart MCP client on error — it may be in a bad state.
+			p.Close()
+			if retryErr := p.ensureClient(ctx); retryErr != nil {
+				log.Printf("slack: MCP reconnect failed: %v", retryErr)
+				break
+			}
 			continue
 		}
 
