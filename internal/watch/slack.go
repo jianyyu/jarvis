@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
@@ -219,11 +220,16 @@ func (p *SlackPoller) searchMessages(query string) ([]SlackEvent, error) {
 			senderName = p.resolveUserName(match.User)
 		}
 
+		threadTS := match.ThreadTS
+		if threadTS == "" {
+			threadTS = threadTSFromPermalink(match.Permalink)
+		}
+
 		events = append(events, SlackEvent{
 			ChannelID:   match.Channel.ID,
 			ChannelName: channelName,
 			MessageTS:   match.Timestamp,
-			ThreadTS:    match.ThreadTS,
+			ThreadTS:    threadTS,
 			Text:        match.Text,
 			SenderID:    match.User,
 			SenderName:  senderName,
@@ -328,6 +334,17 @@ func (p *SlackPoller) Close() {
 		p.client.Close()
 		p.client = nil
 	}
+}
+
+// threadTSFromPermalink extracts thread_ts from a Slack permalink URL.
+// Slack search.messages often omits thread_ts from results, but the permalink
+// for threaded replies contains it as a query parameter.
+func threadTSFromPermalink(permalink string) string {
+	u, err := url.Parse(permalink)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("thread_ts")
 }
 
 func parseSlackTS(ts string) time.Time {
