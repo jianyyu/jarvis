@@ -50,6 +50,10 @@ func buildItemList(mgr *session.Manager) []ListItem {
 		if s.Status == model.StatusArchived || s.Status == model.StatusDone {
 			continue
 		}
+		// Skip sessions inside folders — they appear under their folder already.
+		if s.ParentID != "" {
+			continue
+		}
 		recentItems = append(recentItems, buildSessionItem(s, 0, mgr))
 		if len(recentItems) >= recentMax {
 			break

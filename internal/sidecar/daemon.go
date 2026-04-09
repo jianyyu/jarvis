@@ -43,9 +43,12 @@ type Daemon struct {
 	ringBuf    *RingBuffer
 	listener   net.Listener
 
-	state       atomic.Value // model.SidecarState
-	detail      atomic.Value // string
-	lastOutputT atomic.Value // time.Time
+	state           atomic.Value // model.SidecarState
+	detail          atomic.Value // string
+	lastOutputT     atomic.Value // time.Time
+	lastApproveTime time.Time          // debounce: last time we sent an auto-approve
+	prevState       model.SidecarState // track state transitions for debounce reset
+	handledApproval bool               // true after approval answered; suppresses stale ring buffer matches
 
 	attachMu      sync.Mutex
 	attachedConn  net.Conn
@@ -207,24 +210,68 @@ func (d *Daemon) readPTY() {
 		// Write to ring buffer
 		d.ringBuf.Write(data)
 
-		// Status detection on raw bytes
-		state, det := DetectState(data, elapsed)
+		// Status detection on raw bytes.
+		// Pass recent ring buffer content so approval prompts split across
+		// multiple PTY reads can still be detected.
+		var recentCtx []byte
+		if recent := d.ringBuf.LastN(30); len(recent) > 0 {
+			for _, l := range recent {
+				recentCtx = append(recentCtx, l...)
+				recentCtx = append(recentCtx, '\n')
+			}
+		}
+		// First check the current chunk alone (without ring buffer context).
+		// If the current chunk matches an approval pattern, it's a fresh prompt.
+		// If only the ring buffer matches, it may be stale.
+		chunkState, _ := DetectState(data, elapsed, nil)
+		state, det := DetectState(data, elapsed, recentCtx)
+
+		// Suppress stale approval detections: if the approval was only found
+		// in the ring buffer context (not the current chunk), and we already
+		// handled an approval recently, it's the old prompt lingering.
+		if state == model.StateWaitingForApproval && chunkState != model.StateWaitingForApproval && d.handledApproval {
+			state = model.StateWorking
+			det = ""
+		}
+
 		d.state.Store(state)
 		if det != "" {
 			d.detail.Store(det)
 		}
 
-		// Auto-approve: if the prompt matches a policy, send "y\n" after a short delay.
-		if state == model.StateWaitingForApproval && len(d.policies) > 0 {
+		// When state transitions away from approval (prompt was answered),
+		// reset debounce and mark as handled so ring buffer matches are suppressed.
+		if d.prevState == model.StateWaitingForApproval && state != model.StateWaitingForApproval {
+			d.lastApproveTime = time.Time{}
+			d.handledApproval = true
+		}
+		// A fresh approval in the current chunk clears the handled flag.
+		if chunkState == model.StateWaitingForApproval {
+			d.handledApproval = false
+		}
+		d.prevState = state
+
+		// Auto-approve: if the prompt matches a policy, send \r to confirm
+		// the pre-selected "Yes" option in Claude Code's numbered selection menu.
+		// Debounce: only send once per approval prompt to avoid spamming keystrokes
+		// when the same prompt is detected across multiple PTY chunks.
+		if state == model.StateWaitingForApproval && len(d.policies) > 0 && (d.lastApproveTime.IsZero() || time.Since(d.lastApproveTime) > 3*time.Second) {
 			decision := EvaluateApproval(d.policies, det)
 			if decision.Action == config.ActionApprove {
+				d.lastApproveTime = now
 				toolName := ExtractToolName(det)
 				log.Printf("sidecar: auto-approved %q (matched rule for %v)", toolName, decision.Rule.Tool)
-				// Small delay so the prompt is fully rendered before we respond.
+				// Delay to let the prompt fully render and the input handler initialize.
 				go func() {
-					time.Sleep(200 * time.Millisecond)
-					d.master.Write([]byte("y\n"))
+					time.Sleep(500 * time.Millisecond)
+					// Send \r (carriage return) — confirmed working via debug-approval
+					// tool with PTY I/O logging. The key requirement is timing: the
+					// menu must be fully rendered before sending (detected via
+					// approvalReadyPatterns in status.go).
+					d.master.Write([]byte("\r"))
 				}()
+			} else {
+				log.Printf("sidecar: approval withheld for %q (action=%s)", ExtractToolName(det), decision.Action)
 			}
 		}
 
@@ -323,6 +370,11 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 
 		case "send_input":
 			if d.master != nil {
+				// If we're in approval state and the user sends input,
+				// mark the approval as handled to suppress stale re-detection.
+				if d.state.Load() == model.StateWaitingForApproval {
+					d.handledApproval = true
+				}
 				d.master.Write([]byte(req.Text))
 			}
 

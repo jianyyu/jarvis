@@ -29,6 +29,21 @@ func main() {
 	fmt.Println("Type 'help' for commands, 'exit' to quit")
 
 	scanner := bufio.NewScanner(os.Stdin)
+	// Split on \n or \r to handle both PTY auto-approve (\r) and manual input (\n).
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		for i, b := range data {
+			if b == '\n' || b == '\r' {
+				return i + 1, data[:i], nil
+			}
+		}
+		if atEOF {
+			return len(data), data, nil
+		}
+		return 0, nil, nil // need more data
+	})
 	for {
 		fmt.Print("> ")
 		if !scanner.Scan() {
@@ -49,7 +64,8 @@ func main() {
 			fmt.Println("Allow Bash? (y/n)")
 			if scanner.Scan() {
 				resp := strings.TrimSpace(scanner.Text())
-				if resp == "y" {
+				// Accept "y" or empty (from PTY auto-approve sending \r → empty line).
+				if resp == "y" || resp == "" {
 					fmt.Println("Running command...")
 					time.Sleep(500 * time.Millisecond)
 					fmt.Println("Command completed successfully.")
@@ -64,7 +80,7 @@ func main() {
 			fmt.Println("Allow Read? (y/n)")
 			if scanner.Scan() {
 				resp := strings.TrimSpace(scanner.Text())
-				if resp == "y" {
+				if resp == "y" || resp == "" {
 					fmt.Println("Reading file...")
 					time.Sleep(200 * time.Millisecond)
 					fmt.Println("File read successfully.")
