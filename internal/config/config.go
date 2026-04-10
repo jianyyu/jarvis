@@ -75,8 +75,15 @@ type SlackWatcherConfig struct {
 	IgnoreBots   []string `yaml:"ignore_bots,omitempty"` // bot usernames to skip
 }
 
+type GmailWatcherConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	PollInterval int    `yaml:"poll_interval"` // seconds (default 600 = 10 min)
+	Folder       string `yaml:"folder"`        // folder name to place sessions in
+}
+
 type WatchersConfig struct {
 	Slack SlackWatcherConfig `yaml:"slack"`
+	Gmail GmailWatcherConfig `yaml:"gmail"`
 }
 
 type Config struct {

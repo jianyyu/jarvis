@@ -203,6 +203,11 @@ func (d *Daemon) placeSessionInFolder(sessionID, folderID string) {
 
 // sendInput writes text to a session's PTY stdin via the sidecar socket.
 func (d *Daemon) sendInput(sessionID, text string) {
+	sendInputToSession(sessionID, text)
+}
+
+// sendInputToSession is the shared implementation for injecting text into a session's PTY.
+func sendInputToSession(sessionID, text string) {
 	socketPath := sidecar.SocketPath(sessionID)
 
 	// Wait briefly for Claude to be ready to accept input.
