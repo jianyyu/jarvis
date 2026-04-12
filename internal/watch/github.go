@@ -333,7 +333,7 @@ type ghReview struct {
 // --- gh CLI helpers ---
 
 func (p *GitHubPoller) fetchNotifications() ([]ghNotification, error) {
-	out, err := ghAPI("GET", fmt.Sprintf("/notifications?since=%s&all=false&per_page=50", p.lastPollTS), nil)
+	out, err := ghAPI("GET", fmt.Sprintf("/notifications?since=%s&all=true&per_page=50", p.lastPollTS), nil)
 	if err != nil {
 		return nil, err
 	}
