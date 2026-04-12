@@ -4,14 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"time"
 
 	"jarvis/internal/config"
-	"jarvis/internal/model"
-	"jarvis/internal/protocol"
 	"jarvis/internal/session"
-	"jarvis/internal/sidecar"
 	"jarvis/internal/store"
 )
 
@@ -59,7 +55,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	if slackCfg.Folder != "" {
-		id, err := d.ensureFolder(slackCfg.Folder)
+		id, err := ensureFolder(slackCfg.Folder)
 		if err != nil {
 			return fmt.Errorf("ensure folder: %w", err)
 		}
@@ -114,9 +110,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 				log.Printf("watch: follow-up in existing session %s — %s", sessID, truncate(ev.Text, 60))
 				newContext := fmt.Sprintf("\n[New message from %s at %s]:\n> %s",
 					ev.SenderName, ev.Timestamp.Format(time.RFC3339), ev.Text)
-				d.sendInput(sessID, newContext)
+				sendInputToSession(sessID, newContext)
 				time.Sleep(500 * time.Millisecond)
-				d.sendInput(sessID, "\r")
+				sendInputToSession(sessID, "\r")
 				continue
 			}
 		}
@@ -136,7 +132,7 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 
 		if d.folderID != "" {
-			d.placeSessionInFolder(sess.ID, d.folderID)
+			placeSessionInFolder(sess.ID, d.folderID)
 		}
 
 		d.registry.Register(key, sess.ID)
@@ -145,9 +141,9 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 
 		// Inject the prompt via PTY stdin, then submit with \r separately.
-		d.sendInput(sess.ID, ev.InitialPrompt())
+		sendInputToSession(sess.ID, ev.InitialPrompt())
 		time.Sleep(500 * time.Millisecond)
-		d.sendInput(sess.ID, "\r")
+		sendInputToSession(sess.ID, "\r")
 
 		log.Printf("watch: created session %q (%s)", sess.Name, sess.ID)
 	}
@@ -159,72 +155,3 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 	}
 }
 
-// ensureFolder finds a folder by name or creates it.
-func (d *Daemon) ensureFolder(name string) (string, error) {
-	folders, err := store.ListFolders()
-	if err != nil {
-		return "", err
-	}
-	for _, f := range folders {
-		if f.Name == name && f.Status == "active" {
-			return f.ID, nil
-		}
-	}
-
-	f := &model.Folder{
-		ID:        model.NewID(),
-		Type:      "folder",
-		Name:      name,
-		Status:    "active",
-		CreatedAt: time.Now(),
-	}
-	if err := store.SaveFolder(f); err != nil {
-		return "", err
-	}
-	return f.ID, nil
-}
-
-// placeSessionInFolder sets the session's parent and adds it to the folder's children.
-func (d *Daemon) placeSessionInFolder(sessionID, folderID string) {
-	sess, err := store.GetSession(sessionID)
-	if err != nil {
-		return
-	}
-	sess.ParentID = folderID
-	store.SaveSession(sess)
-
-	folder, err := store.GetFolder(folderID)
-	if err != nil {
-		return
-	}
-	folder.Children = append(folder.Children, model.ChildRef{Type: "session", ID: sessionID})
-	store.SaveFolder(folder)
-}
-
-// sendInput writes text to a session's PTY stdin via the sidecar socket.
-func (d *Daemon) sendInput(sessionID, text string) {
-	socketPath := sidecar.SocketPath(sessionID)
-
-	// Wait briefly for Claude to be ready to accept input.
-	time.Sleep(2 * time.Second)
-
-	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
-	if err != nil {
-		log.Printf("watch: sendInput connect failed for %s: %v", sessionID, err)
-		return
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
-
-	codec := protocol.NewCodec(conn)
-	if err := codec.Send(protocol.Request{Action: "send_input", Text: text}); err != nil {
-		log.Printf("watch: sendInput failed for %s: %v", sessionID, err)
-	}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}

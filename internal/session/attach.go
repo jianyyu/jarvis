@@ -45,6 +45,10 @@ func Attach(socketPath string) error {
 		return fmt.Errorf("make raw: %w", err)
 	}
 
+	// Clear screen so previous session output doesn't bleed into this one.
+	// \033[2J clears the visible screen, \033[H moves cursor to top-left.
+	os.Stdout.WriteString("\033[2J\033[H")
+
 	// Ignore SIGQUIT — Ctrl-\ sends SIGQUIT which would kill us
 	signal.Ignore(syscall.SIGQUIT)
 

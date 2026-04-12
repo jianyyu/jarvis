@@ -75,8 +75,27 @@ type SlackWatcherConfig struct {
 	IgnoreBots   []string `yaml:"ignore_bots,omitempty"` // bot usernames to skip
 }
 
+type GmailWatcherConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	PollInterval int    `yaml:"poll_interval"` // seconds (default 600 = 10 min)
+	Folder       string `yaml:"folder"`        // folder name to place sessions in
+}
+
+type GitHubWatcherConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	Owner        string   `yaml:"owner"`                    // e.g. "databricks-eng"
+	Repo         string   `yaml:"repo"`                     // e.g. "universe"
+	Username     string   `yaml:"username"`                 // your GitHub username (for filtering own comments)
+	PollInterval int      `yaml:"poll_interval"`            // seconds
+	Folder       string   `yaml:"folder"`                   // folder name to place sessions in
+	Reasons      []string `yaml:"reasons"`                  // notification reasons: "review_requested", "author"
+	IgnoreUsers  []string `yaml:"ignore_users,omitempty"`   // usernames to skip
+}
+
 type WatchersConfig struct {
-	Slack SlackWatcherConfig `yaml:"slack"`
+	Slack  SlackWatcherConfig  `yaml:"slack"`
+	Gmail  GmailWatcherConfig  `yaml:"gmail"`
+	GitHub GitHubWatcherConfig `yaml:"github"`
 }
 
 type Config struct {
