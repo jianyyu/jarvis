@@ -47,7 +47,8 @@ Poll cycle (every N seconds):
      └── If no new human comments on an "author" notification → skip
 
   4. Registry lookup: "github:databricks-eng/universe#<PR#>"
-     ├── Found + session exists → sendInput (follow-up)
+     ├── Found + session exists + sidecar alive → sendInput (follow-up)
+     ├── Found + session exists + sidecar dead  → mgr.Resume(sess), then sendInput
      ├── Found + session deleted → unregister, recreate
      └── Not found → spawn new session
 ```
@@ -117,6 +118,8 @@ Do NOT post any comments or take any external-facing actions.
 ```
 
 ### Follow-up (new activity on PR with existing session)
+
+If the session's sidecar is dead (suspended), call `mgr.Resume(sess)` to restart it with `claude --resume`, then wait for the sidecar socket to become available before injecting input.
 
 Injected via `sendInput`:
 ```
