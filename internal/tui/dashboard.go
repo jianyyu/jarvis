@@ -205,6 +205,13 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return d, tea.Batch(d.refreshItems(), tickEvery())
 
 	case refreshMsg:
+		// Remember the currently selected item so the cursor follows it
+		// after the list is rebuilt (items may have reordered).
+		var selectedID string
+		if old := d.selectedItem(); old != nil {
+			selectedID = old.ID
+		}
+
 		d.items = msg.items
 		// Apply persisted expand state to freshly-loaded items.
 		for i := range d.items {
@@ -215,6 +222,16 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		visible := d.filteredItems()
+
+		// Try to restore the cursor to the same item by ID.
+		if selectedID != "" {
+			for i, item := range visible {
+				if item.ID == selectedID {
+					d.cursor = i
+					break
+				}
+			}
+		}
 		if d.cursor >= len(visible) {
 			d.cursor = max(0, len(visible)-1)
 		}
