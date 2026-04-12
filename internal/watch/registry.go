@@ -19,10 +19,15 @@ type Registry struct {
 	name       string            // watcher name (e.g. "slack", "github", "pagerduty")
 	entries    map[string]string // context key → session ID
 	lastPollTS string            // persisted timestamp of newest seen message
+	commentTS  map[string]string // per-context-key comment timestamps
 }
 
 func NewRegistry(watcherName string) *Registry {
-	return &Registry{name: watcherName, entries: make(map[string]string)}
+	return &Registry{
+		name:      watcherName,
+		entries:   make(map[string]string),
+		commentTS: make(map[string]string),
+	}
 }
 
 // registryPath returns the path for a watcher-specific registry file.
@@ -51,8 +56,9 @@ func (r *Registry) Unregister(contextKey string) {
 }
 
 type registryFile struct {
-	Contexts   map[string]string `yaml:"contexts"`
-	LastPollTS string            `yaml:"last_poll_ts,omitempty"` // Slack timestamp of newest seen message
+	Contexts          map[string]string `yaml:"contexts"`
+	LastPollTS        string            `yaml:"last_poll_ts,omitempty"`
+	CommentTimestamps map[string]string `yaml:"comment_timestamps,omitempty"`
 }
 
 func (r *Registry) SetLastPollTS(ts string) {
@@ -67,9 +73,25 @@ func (r *Registry) GetLastPollTS() string {
 	return r.lastPollTS
 }
 
+func (r *Registry) SetCommentTS(contextKey, ts string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commentTS[contextKey] = ts
+}
+
+func (r *Registry) GetCommentTS(contextKey string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.commentTS[contextKey]
+}
+
 func (r *Registry) Save() error {
 	r.mu.Lock()
-	data, err := yaml.Marshal(registryFile{Contexts: r.entries, LastPollTS: r.lastPollTS})
+	data, err := yaml.Marshal(registryFile{
+		Contexts:          r.entries,
+		LastPollTS:        r.lastPollTS,
+		CommentTimestamps: r.commentTS,
+	})
 	r.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("marshal registry: %w", err)
@@ -95,5 +117,8 @@ func (r *Registry) Load() error {
 		r.entries = f.Contexts
 	}
 	r.lastPollTS = f.LastPollTS
+	if f.CommentTimestamps != nil {
+		r.commentTS = f.CommentTimestamps
+	}
 	return nil
 }

@@ -66,3 +66,41 @@ func TestRegistryLoadEmpty(t *testing.T) {
 		t.Errorf("should be empty, got %d entries", len(reg.entries))
 	}
 }
+
+func TestRegistryCommentTimestamps(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("JARVIS_HOME", tmp)
+	defer os.Unsetenv("JARVIS_HOME")
+
+	r := NewRegistry("github")
+
+	// Set and get comment timestamps
+	r.SetCommentTS("github:databricks-eng/universe#1234", "2026-04-12T01:00:00Z")
+	r.SetCommentTS("github:databricks-eng/universe#5678", "2026-04-12T02:00:00Z")
+
+	ts := r.GetCommentTS("github:databricks-eng/universe#1234")
+	if ts != "2026-04-12T01:00:00Z" {
+		t.Errorf("comment ts: got %q", ts)
+	}
+
+	// Save and reload
+	if err := r.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	r2 := NewRegistry("github")
+	if err := r2.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	ts2 := r2.GetCommentTS("github:databricks-eng/universe#1234")
+	if ts2 != "2026-04-12T01:00:00Z" {
+		t.Errorf("loaded comment ts: got %q", ts2)
+	}
+
+	// Non-existent key returns empty
+	ts3 := r2.GetCommentTS("github:databricks-eng/universe#9999")
+	if ts3 != "" {
+		t.Errorf("missing key should return empty, got %q", ts3)
+	}
+}
