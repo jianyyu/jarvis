@@ -13,8 +13,7 @@ func TestEnsureFolderCreatesNew(t *testing.T) {
 	os.Setenv("JARVIS_HOME", tmp)
 	defer os.Unsetenv("JARVIS_HOME")
 
-	d := &Daemon{}
-	folderID, err := d.ensureFolder("Slack")
+	folderID, err := ensureFolder("Slack")
 	if err != nil {
 		t.Fatalf("ensureFolder: %v", err)
 	}
@@ -44,8 +43,7 @@ func TestEnsureFolderReusesExisting(t *testing.T) {
 	}
 	store.SaveFolder(existing)
 
-	d := &Daemon{}
-	folderID, err := d.ensureFolder("Slack")
+	folderID, err := ensureFolder("Slack")
 	if err != nil {
 		t.Fatalf("ensureFolder: %v", err)
 	}
@@ -76,8 +74,7 @@ func TestPlaceSessionInFolder(t *testing.T) {
 	}
 	store.SaveSession(sess)
 
-	d := &Daemon{}
-	d.placeSessionInFolder(sess.ID, folder.ID)
+	placeSessionInFolder(sess.ID, folder.ID)
 
 	updated, _ := store.GetFolder(folder.ID)
 	if len(updated.Children) != 1 {
