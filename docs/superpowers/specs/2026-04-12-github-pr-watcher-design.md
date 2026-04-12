@@ -92,6 +92,12 @@ Do NOT post any comments, approve, or take any external-facing actions.
 
 **Session name:** `gh: PR #1234 — <title>`
 
+**CWD selection:** The session must run in the correct worktree so Claude can make code changes if needed:
+1. Get the PR's head ref from the detail fetch (`gh api .../pulls/{n}` → `.head.ref`)
+2. Find the matching local worktree: run `git worktree list --porcelain` in the repo, match by branch name
+3. If found → spawn session with `cwd = <worktree path>`
+4. If not found → spawn in repo root, include branch name in prompt for Claude to handle
+
 **Initial prompt:**
 ```
 Someone left comments on my PR: <html_url>
@@ -103,6 +109,9 @@ New comments since last check:
 Read the PR diff for context, understand the review feedback, and draft
 responses to each comment. If code changes are suggested, explain what
 changes would address the feedback.
+
+IMPORTANT: Verify you are on the correct branch (<head_ref>) before making
+any code changes. Run `git branch --show-current` to confirm.
 
 Do NOT post any comments or take any external-facing actions.
 ```
@@ -174,6 +183,7 @@ type GitHubEvent struct {
     PRTitle  string
     PRURL    string       // html_url
     PRAuthor string
+    HeadRef  string       // branch name (e.g. "stack/fix-...")
     Reason   string       // "review_requested" or "author"
     Comments []PRComment  // new human comments from detail fetch
     NotifID  string
