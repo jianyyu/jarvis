@@ -26,8 +26,9 @@ func main() {
 
 	slackEnabled := cfg.Watchers.Slack.Enabled
 	gmailEnabled := cfg.Watchers.Gmail.Enabled
+	githubEnabled := cfg.Watchers.GitHub.Enabled
 
-	if !slackEnabled && !gmailEnabled {
+	if !slackEnabled && !gmailEnabled && !githubEnabled {
 		fmt.Fprintln(os.Stderr, "error: no watchers enabled in config")
 		fmt.Fprintln(os.Stderr, "\nConfigure watchers in ~/.jarvis/config.yaml:")
 		fmt.Fprintln(os.Stderr, "  watchers:")
@@ -41,6 +42,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "      enabled: true")
 		fmt.Fprintln(os.Stderr, "      poll_interval: 600")
 		fmt.Fprintln(os.Stderr, "      folder: \"Gmail\"")
+		fmt.Fprintln(os.Stderr, "    github:")
+		fmt.Fprintln(os.Stderr, "      enabled: true")
+		fmt.Fprintln(os.Stderr, "      owner: \"databricks-eng\"")
+		fmt.Fprintln(os.Stderr, "      repo: \"universe\"")
+		fmt.Fprintln(os.Stderr, "      username: \"jianyu-zhou_data\"")
+		fmt.Fprintln(os.Stderr, "      poll_interval: 60")
+		fmt.Fprintln(os.Stderr, "      folder: \"GitHub PRs\"")
+		fmt.Fprintln(os.Stderr, "      reasons:")
+		fmt.Fprintln(os.Stderr, "        - review_requested")
+		fmt.Fprintln(os.Stderr, "        - author")
 		os.Exit(1)
 	}
 
@@ -84,6 +95,22 @@ func main() {
 			log.Println("starting Gmail watcher")
 			if err := gmailDaemon.Run(ctx); err != nil {
 				log.Printf("gmail watcher error: %v", err)
+			}
+		}()
+	}
+
+	if githubEnabled {
+		githubDaemon, err := watch.NewGitHubDaemon(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "github watcher error: %v\n", err)
+			os.Exit(1)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Println("starting GitHub watcher")
+			if err := githubDaemon.Run(ctx); err != nil {
+				log.Printf("github watcher error: %v", err)
 			}
 		}()
 	}
