@@ -321,24 +321,31 @@ func (tp *TermPane) streamOutput() {
 		}
 
 		switch resp.Event {
-		case "output", "buffer":
+		case "buffer":
+			// The sidecar dumps the entire ring buffer on attach (up to
+			// 10K lines / megabytes). Only keep the tail to avoid freezing
+			// the VT emulator. This gives recent context without blocking
+			// Render() for seconds.
 			if resp.Data != "" {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
-					log.Printf("termpane: base64 decode error: %v", err)
 					continue
 				}
-				// Write in chunks to avoid holding the SafeEmulator's
-				// internal lock for too long, which blocks Render()/View().
-				const chunkSize = 4096
-				for len(raw) > 0 {
-					n := chunkSize
-					if n > len(raw) {
-						n = len(raw)
-					}
-					tp.emulator.Write(raw[:n])
-					raw = raw[n:]
+				const maxBufferBytes = 16384 // 16KB of recent output
+				if len(raw) > maxBufferBytes {
+					raw = raw[len(raw)-maxBufferBytes:]
 				}
+				tp.emulator.Write(raw)
+			}
+
+		case "output":
+			// Live output — write immediately, small chunks.
+			if resp.Data != "" {
+				raw, err := base64.StdEncoding.DecodeString(resp.Data)
+				if err != nil {
+					continue
+				}
+				tp.emulator.Write(raw)
 			}
 
 		case "session_ended":
