@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -110,7 +111,9 @@ func (tp *TermPane) View() string {
 
 	var content string
 	if connected && em != nil {
-		content = em.Render()
+		// Sanitize: strip non-SGR escape sequences that confuse Bubble Tea's
+		// diff renderer (cursor positioning, screen modes, etc.).
+		content = sanitizeForBubbletea(em.Render())
 	} else {
 		content = tp.placeholderView(cols, rows)
 	}
@@ -405,4 +408,16 @@ func (tp *TermPane) streamOutput() {
 			return
 		}
 	}
+}
+
+// nonSGRescapeRe matches ANSI escape sequences that are NOT SGR (Select
+// Graphic Rendition, ending in 'm'). These include cursor positioning,
+// screen mode changes, scroll regions, etc. that confuse Bubble Tea's
+// diff renderer.
+var nonSGRescapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-LN-Za-ln-z]|\x1b\[\?[0-9;]*[a-z]|\x1b[()][A-Z0-9]|\x1b=|\x1b>`)
+
+// sanitizeForBubbletea strips non-SGR escape sequences from VT emulator
+// output so Bubble Tea's renderer can diff it correctly.
+func sanitizeForBubbletea(s string) string {
+	return nonSGRescapeRe.ReplaceAllString(s, "")
 }

@@ -114,7 +114,9 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.SetFocused(false)
 		m.previewSessionID = msg.sessionID
 		m.updateStatusBar()
-		return m, nil
+		// Force a full screen clear + redraw. Without this, Bubble Tea's
+		// renderer stalls after the focus switch (cause unknown).
+		return m, tea.Batch(tea.ClearScreen, redrawTick())
 
 	case termPaneRedrawMsg:
 		// Periodic redraw for term pane content. Reschedule.
@@ -174,9 +176,11 @@ func (m Multiplexer) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd
 
 func (m Multiplexer) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Global: Toggle focus between sidebar and term pane.
-	// Alt+S (Option+S with "Option as Meta" enabled) or Ctrl+\ (fallback).
-	if msg.String() == "alt+s" || msg.Type == tea.KeyCtrlBackslash {
-		return m.handleToggleFocus()
+	// Esc (always works), Alt+S, or Ctrl+\.
+	if msg.Type == tea.KeyEscape || msg.String() == "alt+s" || msg.Type == tea.KeyCtrlBackslash {
+		if m.focus.Current() == FocusTermPane {
+			return m.handleToggleFocus()
+		}
 	}
 
 	// Global: q and ctrl+c quit (only when sidebar is focused and in normal mode).
@@ -373,6 +377,8 @@ func (m Multiplexer) View() string {
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
 
+	_ = sidebarFocused // used below
+
 	// Calculate body height (total height minus status bar).
 	bodyHeight := m.height - 1
 	if bodyHeight < 1 {
@@ -409,12 +415,11 @@ func (m Multiplexer) View() string {
 	t4 := time.Now()
 
 	// Compose vertically: body over status bar.
-	// Hide cursor to prevent VT emulator cursor from leaking through.
-	result := "\x1b[?25l" + lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
+	result := lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
 	t5 := time.Now()
 
-	log.Printf("View: sidebar=%v termPane=%v join=%v total=%v termViewLen=%d",
-		t1.Sub(t0), t3.Sub(t2), t4.Sub(t3), t5.Sub(t0), len(termView))
+	log.Printf("View: sidebar=%v termPane=%v join=%v total=%v termViewLen=%d resultLen=%d",
+		t1.Sub(t0), t3.Sub(t2), t4.Sub(t3), t5.Sub(t0), len(termView), len(result))
 
 	return result
 }
