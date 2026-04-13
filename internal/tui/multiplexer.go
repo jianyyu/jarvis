@@ -73,7 +73,7 @@ func (m *Multiplexer) SetProgram(p *tea.Program) {
 // Init is called once when the program starts. It kicks off the first
 // data load, the periodic refresh timer, and the status poll timer.
 func (m Multiplexer) Init() tea.Cmd {
-	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), statusPollEvery())
+	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), statusPollEvery(), redrawTick())
 }
 
 func statusPollEvery() tea.Cmd {
@@ -82,9 +82,18 @@ func statusPollEvery() tea.Cmd {
 	})
 }
 
+// redrawTick triggers a re-render at ~5fps so the term pane shows
+// new output from the VT emulator. No prog.Send, no extra goroutines.
+func redrawTick() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+		return termPaneRedrawMsg{}
+	})
+}
+
 // Update is the main event handler.
 func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	log.Printf("mux: Update got %T", msg)
+	// Uncomment for debugging:
+	// log.Printf("mux: Update got %T", msg)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -120,8 +129,8 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case termPaneRedrawMsg:
-		// The VT emulator has new content — just return to trigger View().
-		return m, nil
+		// Periodic redraw for term pane content. Reschedule.
+		return m, redrawTick()
 
 	case sidecarEndedMsg:
 		log.Printf("mux: session %s ended (exit %d)", msg.sessionID, msg.exitCode)

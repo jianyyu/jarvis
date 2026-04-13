@@ -15,8 +15,7 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
-// termPaneRedrawMsg is a lightweight signal that the VT emulator has new
-// content and View() should be called. Sent at a fixed rate, not per-chunk.
+// termPaneRedrawMsg is a lightweight signal to trigger View().
 type termPaneRedrawMsg struct{}
 
 // sidecarEndedMsg signals that the session's sidecar has exited.
@@ -345,32 +344,6 @@ func (tp *TermPane) Close() {
 // decodes base64-encoded output data, and writes it to the VT emulator.
 // It handles "output", "buffer", and "session_ended" events.
 func (tp *TermPane) streamOutput() {
-	tp.mu.Lock()
-	sid := tp.sessionID
-	tp.mu.Unlock()
-	log.Printf("streamOutput: started for session %s", sid)
-
-	// Redraw ticker: notify Bubble Tea at most 30fps to re-render.
-	// This prevents flooding the terminal with renders during output bursts.
-	redrawTicker := time.NewTicker(33 * time.Millisecond)
-	defer redrawTicker.Stop()
-	dirty := false
-
-	go func() {
-		for range redrawTicker.C {
-			if !dirty {
-				continue
-			}
-			dirty = false
-			tp.mu.Lock()
-			prog := tp.program
-			tp.mu.Unlock()
-			if prog != nil {
-				prog.Send(termPaneRedrawMsg{})
-			}
-		}
-	}()
-
 	for {
 		tp.mu.Lock()
 		stopCh := tp.stopCh
@@ -410,7 +383,6 @@ func (tp *TermPane) streamOutput() {
 					raw = raw[len(raw)-maxBufferBytes:]
 				}
 				em.Write(raw)
-				dirty = true
 			}
 
 		case "output":
@@ -420,16 +392,15 @@ func (tp *TermPane) streamOutput() {
 					continue
 				}
 				em.Write(raw)
-				dirty = true
 			}
 
 		case "session_ended":
-			log.Printf("streamOutput: session ended (exit code %d)", resp.ExitCode)
 			tp.mu.Lock()
 			prog := tp.program
+			sid := tp.sessionID
 			tp.mu.Unlock()
 			if prog != nil {
-				prog.Send(sidecarEndedMsg{sessionID: sid, exitCode: resp.ExitCode})
+				prog.Send(sidecarEndedMsg{sessionID: sid})
 			}
 			return
 		}
