@@ -110,6 +110,9 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionAttachFailedMsg:
+		if msg.err != nil {
+			m.statusBar.SetSession("ATTACH FAILED", msg.err.Error())
+		}
 		return m, m.sidebar.RefreshItems()
 
 	case previewConnectedMsg:
