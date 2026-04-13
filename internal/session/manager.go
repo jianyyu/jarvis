@@ -186,6 +186,17 @@ func AttachToSocket(socketPath string) error {
 	return Attach(socketPath)
 }
 
+// ResumeByID loads a session by ID and resumes it.
+func (m *Manager) ResumeByID(sessionID string) error {
+	sess, err := store.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	sess.UpdatedAt = time.Now()
+	store.SaveSession(sess)
+	return m.Resume(sess)
+}
+
 // Resume restarts a dead sidecar with claude --resume.
 func (m *Manager) Resume(sess *model.Session) error {
 	// Clean up stale socket

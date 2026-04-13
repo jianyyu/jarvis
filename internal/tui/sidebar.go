@@ -251,7 +251,7 @@ func (s *Sidebar) handleDashboardKey(msg tea.KeyMsg) (tea.Cmd, string) {
 		if item == nil {
 			break
 		}
-		if item.IsSession() && item.Status == model.StatusActive {
+		if item.IsSession() && item.Status != model.StatusArchived {
 			s.SaveState()
 			return nil, item.ID
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"jarvis/internal/config"
+	"jarvis/internal/session"
 	"jarvis/internal/sidecar"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -236,26 +237,36 @@ func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ── Session attachment ─────────────────────────────────────────────────
 
 // attachToSession returns a tea.Cmd that connects and attaches to a session.
+// If the sidecar is dead, it resumes the session first (restarts the sidecar).
 // IMPORTANT: This is async, so it must NOT mutate the Multiplexer value type.
-// It captures the termPane pointer (safe because it's pointer-based).
 func (m Multiplexer) attachToSession(sessionID string) tea.Cmd {
 	termPane := m.termPane
+	mgr := m.sidebar.Manager()
 	return func() tea.Msg {
-		socketPath := sidecar.SocketPath(sessionID)
-
-		if termPane.SessionID() == sessionID {
+		if termPane.SessionID() == sessionID && termPane.IsConnected() {
 			// Already connected to this session — just attach.
 			if err := termPane.Attach(); err != nil {
 				return sessionAttachFailedMsg{err: err}
 			}
-		} else {
-			// Connect to a new session.
-			if err := termPane.ConnectPreview(socketPath, sessionID); err != nil {
+			return sessionAttachedMsg{sessionID: sessionID}
+		}
+
+		socketPath := sidecar.SocketPath(sessionID)
+
+		// Check if sidecar is alive. If not, resume (restart) it.
+		if !session.PingSidecar(socketPath) {
+			if err := mgr.ResumeByID(sessionID); err != nil {
 				return sessionAttachFailedMsg{err: err}
 			}
-			if err := termPane.Attach(); err != nil {
-				return sessionAttachFailedMsg{err: err}
-			}
+			socketPath = sidecar.SocketPath(sessionID)
+		}
+
+		// Connect and attach.
+		if err := termPane.ConnectPreview(socketPath, sessionID); err != nil {
+			return sessionAttachFailedMsg{err: err}
+		}
+		if err := termPane.Attach(); err != nil {
+			return sessionAttachFailedMsg{err: err}
 		}
 		return sessionAttachedMsg{sessionID: sessionID}
 	}
