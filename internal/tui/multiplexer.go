@@ -84,16 +84,7 @@ func statusPollEvery() tea.Cmd {
 
 // Update is the main event handler.
 func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
-	case tea.KeyMsg, tea.WindowSizeMsg:
-		// don't log these, too noisy
-	case sessionAttachedMsg, sessionAttachFailedMsg:
-		log.Printf("mux: Update got %T", msg)
-	case refreshMsg:
-		// log.Printf("mux: Update got refreshMsg") // too noisy
-	default:
-		// log.Printf("mux: Update got %T", msg)
-	}
+	log.Printf("mux: Update got %T", msg)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -188,8 +179,9 @@ func (m Multiplexer) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd
 // ── Key handling ───────────────────────────────────────────────────────
 
 func (m Multiplexer) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Global: Option+S toggles focus between sidebar and term pane.
-	if msg.String() == "alt+s" {
+	// Global: Toggle focus between sidebar and term pane.
+	// Alt+S (Option+S with "Option as Meta" enabled) or Ctrl+\ (fallback).
+	if msg.String() == "alt+s" || msg.Type == tea.KeyCtrlBackslash {
 		return m.handleToggleFocus()
 	}
 

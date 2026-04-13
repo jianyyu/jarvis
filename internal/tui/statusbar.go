@@ -61,7 +61,7 @@ func (s *StatusBar) View() string {
 		left = " \u25cf " + s.sessionName + " \u2502 " + s.sessionState
 	}
 
-	right := "Option+S: sidebar "
+	right := "Ctrl+\\: sidebar "
 
 	// Calculate padding between left and right sections.
 	padding := width - lipgloss.Width(left) - lipgloss.Width(right)

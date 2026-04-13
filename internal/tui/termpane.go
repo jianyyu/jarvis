@@ -391,6 +391,7 @@ func (tp *TermPane) streamOutput() {
 		default:
 		}
 
+		log.Printf("streamOutput: waiting for data (prog=%v)...", prog != nil)
 		var resp protocol.Response
 		if err := codec.Receive(&resp); err != nil {
 			select {
@@ -401,6 +402,7 @@ func (tp *TermPane) streamOutput() {
 			}
 			return
 		}
+		log.Printf("streamOutput: got event=%s datalen=%d", resp.Event, len(resp.Data))
 
 		switch resp.Event {
 		case "buffer":
@@ -409,9 +411,11 @@ func (tp *TermPane) streamOutput() {
 				if err != nil {
 					continue
 				}
+				log.Printf("streamOutput: sending buffer msg (%d raw bytes)...", len(raw))
 				if prog != nil {
 					prog.Send(sidecarOutputMsg{data: raw, isBuffer: true, sessionID: sessID})
 				}
+				log.Printf("streamOutput: buffer msg sent")
 			}
 
 		case "output":
