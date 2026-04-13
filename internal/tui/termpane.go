@@ -48,7 +48,8 @@ type TermPane struct {
 	// pendingData accumulates raw bytes from streamOutput. Drained and
 	// written to the emulator in View() on the main goroutine, avoiding
 	// concurrent Write/Render on SafeEmulator which causes deadlocks.
-	pendingData []byte
+	pendingData     []byte
+	hasReceivedData bool // true after first data received
 }
 
 // NewTermPane creates a new TermPane with a VT emulator sized to cols x rows.
@@ -79,6 +80,14 @@ func (tp *TermPane) HasPendingData() bool {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	return len(tp.pendingData) > 0
+}
+
+// HasContent returns true if the emulator has received any data.
+func (tp *TermPane) HasContent() bool {
+	tp.mu.Lock()
+	hasData := tp.hasReceivedData
+	tp.mu.Unlock()
+	return hasData
 }
 
 // IsAttached returns true if the pane is in full interactive mode.
@@ -277,6 +286,8 @@ func (tp *TermPane) disconnectLocked() {
 	tp.connected = false
 	tp.attached = false
 	tp.sessionID = ""
+	tp.hasReceivedData = false
+	tp.pendingData = nil
 
 	// Do NOT close the old emulator here — the old streamOutput goroutine
 	// may still be calling em.Write() with a captured reference. Closing it
@@ -403,6 +414,7 @@ func (tp *TermPane) streamOutput() {
 				}
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
+				tp.hasReceivedData = true
 				tp.mu.Unlock()
 			}
 
@@ -414,6 +426,7 @@ func (tp *TermPane) streamOutput() {
 				}
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
+				tp.hasReceivedData = true
 				tp.mu.Unlock()
 			}
 

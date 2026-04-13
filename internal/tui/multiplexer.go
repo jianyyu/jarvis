@@ -114,9 +114,7 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.SetFocused(false)
 		m.previewSessionID = msg.sessionID
 		m.updateStatusBar()
-		// Force a full screen clear + redraw. Without this, Bubble Tea's
-		// renderer stalls after the focus switch (cause unknown).
-		return m, tea.Batch(tea.ClearScreen, redrawTick())
+		return m, redrawTick()
 
 	case termPaneRedrawMsg:
 		// Only re-render if there's pending data. Otherwise just reschedule
@@ -383,12 +381,14 @@ func (m Multiplexer) View() string {
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
 
-	// When TermPane is focused, hide the sidebar to reduce output size.
-	// This prevents Bubble Tea's renderer from blocking on large writes.
-	if !sidebarFocused && m.termPane.IsConnected() {
-		// Full-screen term pane when attached
+	// When TermPane is focused and has content, go fullscreen.
+	// Don't switch to fullscreen with an empty emulator — the dramatic
+	// size change (10KB sidebar → 44 bytes) causes Bubble Tea's renderer
+	// to produce a huge diff that blocks the SSH terminal write.
+	if !sidebarFocused && m.termPane.IsConnected() && m.termPane.HasContent() {
 		termView := m.termPane.View()
-		return padToHeight(termView, m.height)
+		result := padToHeight(termView, m.height)
+		return result
 	}
 
 	// Calculate body height (total height minus status bar).
