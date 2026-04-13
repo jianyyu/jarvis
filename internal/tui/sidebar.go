@@ -154,7 +154,7 @@ func (s *Sidebar) SaveState() {
 // RefreshItems returns a tea.Cmd that builds the item list from disk.
 func (s *Sidebar) RefreshItems() tea.Cmd {
 	return func() tea.Msg {
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -621,7 +621,7 @@ func (s *Sidebar) createSession(name string, parentID string) tea.Cmd {
 		}
 		sess, err := s.mgr.Spawn(name, cwd, []string{"claude"})
 		if err != nil {
-			return refreshMsg{items: buildItemList(s.mgr)}
+			return refreshMsg{items: buildItemListCached()}
 		}
 
 		if parentID != "" {
@@ -646,7 +646,7 @@ func (s *Sidebar) createChat(parentID string) tea.Cmd {
 		}
 		sess, err := s.mgr.Spawn("(untitled chat)", cwd, []string{"claude"})
 		if err != nil {
-			return refreshMsg{items: buildItemList(s.mgr)}
+			return refreshMsg{items: buildItemListCached()}
 		}
 
 		if parentID != "" {
@@ -684,7 +684,7 @@ func (s *Sidebar) createFolder(name string, parentID string) tea.Cmd {
 			}
 		}
 
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -696,7 +696,7 @@ func (s *Sidebar) renameSession(sessionID, name string) tea.Cmd {
 			sess.UpdatedAt = time.Now()
 			store.SaveSession(sess)
 		}
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -707,7 +707,7 @@ func (s *Sidebar) renameFolder(folderID, name string) tea.Cmd {
 			f.Name = name
 			store.SaveFolder(f)
 		}
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -719,7 +719,7 @@ func (s *Sidebar) markDone(sessionID string) tea.Cmd {
 			sess.UpdatedAt = time.Now()
 			store.SaveSession(sess)
 		}
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -727,7 +727,7 @@ func (s *Sidebar) markFolderDone(folderID string) tea.Cmd {
 	return func() tea.Msg {
 		f, err := store.GetFolder(folderID)
 		if err != nil {
-			return refreshMsg{items: buildItemList(s.mgr)}
+			return refreshMsg{items: buildItemListCached()}
 		}
 
 		now := time.Now()
@@ -745,7 +745,7 @@ func (s *Sidebar) markFolderDone(folderID string) tea.Cmd {
 		f.Status = "done"
 		store.SaveFolder(f)
 
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -759,14 +759,14 @@ func (s *Sidebar) deleteSession(sessionID, name string) tea.Cmd {
 		}
 
 		store.DeleteSession(sessionID)
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
 func (s *Sidebar) deleteFolder(folderID, name string) tea.Cmd {
 	return func() tea.Msg {
 		deleteFolderRecursive(folderID)
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
@@ -776,7 +776,7 @@ func (s *Sidebar) quickApprove(sessionID string) tea.Cmd {
 		conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 		if err != nil {
 			log.Printf("sidebar: quick-approve connect failed for %s: %v", sessionID, err)
-			return refreshMsg{items: buildItemList(s.mgr)}
+			return refreshMsg{items: buildItemListCached()}
 		}
 		defer conn.Close()
 		conn.SetDeadline(time.Now().Add(2 * time.Second))
@@ -784,7 +784,7 @@ func (s *Sidebar) quickApprove(sessionID string) tea.Cmd {
 		codec := protocol.NewCodec(conn)
 		codec.Send(protocol.Request{Action: "send_input", Text: "y\n"})
 
-		return refreshMsg{items: buildItemList(s.mgr)}
+		return refreshMsg{items: buildItemListCached()}
 	}
 }
 
