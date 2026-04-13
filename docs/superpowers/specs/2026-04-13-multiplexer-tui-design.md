@@ -62,25 +62,29 @@ Styled like a file tree browser (similar to Cursor/VS Code's sidebar).
 
 ### TermPane
 
-New component. Wraps `vt.SafeEmulator` and a sidecar socket connection.
+New component. Wraps `vt.SafeEmulator` and a sidecar socket connection. Has two modes: **preview** and **attached**.
 
-On attach to a session:
+**Preview mode** (sidebar focused, browsing):
 1. Dial the sidecar Unix socket
-2. Request ring buffer (`{Action: "get_buffer", Lines: 5000}`) for catch-up
+2. Request ring buffer (`{Action: "get_buffer", Lines: 5000}`)
 3. Feed buffer into VT emulator via `em.Write()`
-4. Send `{Action: "attach"}` to claim the attach slot
-5. Start output streaming goroutine: sidecar sends `{Event: "output", Data: base64}`, decode, `em.Write()`
-6. On each Bubble Tea render cycle, call `em.Render()` for the main pane content
+4. Stream output from sidecar (read-only, do NOT send `{Action: "attach"}`)
+5. Render `em.Render()` in the main pane
+6. No input forwarding — keystrokes go to sidebar
 
-On detach (switch session or focus sidebar):
+When sidebar selection changes, disconnect preview from previous session and connect to new one. VT emulator is reset between previews.
+
+**Attached mode** (main pane focused, after Enter):
+1. Send `{Action: "attach"}` to claim the attach slot on the already-connected sidecar
+2. All keystrokes forwarded via `em.SendKey()` -> sidecar `send_input`
+3. Full interactive session
+
+**Transition: attached -> preview** (Option+S pressed):
 1. Send `{Action: "detach"}` to sidecar
-2. Close connection
-3. Reset VT emulator (clear screen buffer). No need to preserve — the ring buffer provides catch-up on re-attach.
+2. Stay connected for output streaming (drop back to preview mode)
+3. Sidebar receives focus
 
-On session switch:
-- Detach current, attach new. Instant — ring buffer provides catch-up context.
-
-Input forwarding (when focused):
+Input forwarding (attached mode only):
 - `tea.KeyMsg` -> `em.SendKey()` -> read from emulator input pipe -> send to sidecar as `{Action: "send_input", Text: base64}`
 
 Resize handling:
@@ -90,7 +94,7 @@ Resize handling:
 
 Single row at the bottom. Shows:
 ```
-session-name | state | Option+S: sidebar | Option+J/K: switch
+session-name | state | Option+S: sidebar
 ```
 
 ### FocusManager
@@ -103,21 +107,33 @@ Tracks which component receives keystrokes. Two states:
 
 ## Keyboard Input
 
-### Focus Toggle
+### Workflow
 
-`Option+S` (`\x1b s`) toggles focus between sidebar and main pane. This works when the terminal is configured with "Option as Meta key" (standard for developer setups on Mac).
+1. **Option+S** (`\x1b s`) — toggle focus to sidebar. Only intercepted key while main pane is focused.
+2. **Up/Down arrows** — navigate sessions in sidebar. Plain arrow keys work because sidebar has focus.
+3. **Main pane shows preview** — as you navigate, the main pane shows read-only output from the highlighted session (loaded from sidecar ring buffer, not attached).
+4. **Enter** — attach to highlighted session. Focus shifts to main pane, fully interactive.
+5. **Option+S** again — detach from session (back to preview mode), focus sidebar.
 
-### Intercepted Keys (never forwarded to session)
+All other sidebar keybinds work when sidebar is focused: `n` (new session), `f` (new folder), `d` (done), `/` (search), `space` (expand/collapse), `r` (rename), `x` (delete).
+
+### Intercepted Keys
+
+Only one key is intercepted while the main pane has focus:
 
 | Key | Sequence | Action |
 |---|---|---|
-| Option+S | `\x1b s` | Toggle sidebar focus |
-| Option+J | `\x1b j` | Select next session in sidebar (without leaving main pane) |
-| Option+K | `\x1b k` | Select previous session in sidebar |
-| Option+Enter | `\x1b \r` | Attach to selected session (switch main pane) |
-| Option+N | `\x1b n` | New session (without leaving main pane) |
+| Option+S | `\x1b s` | Toggle focus to sidebar |
 
-### Input Path
+All other keys pass through to Claude Code, including Ctrl+C, Ctrl+Z, Ctrl+D, escape, arrow keys, Tab, Enter, function keys.
+
+### Preview vs Attached
+
+**Preview mode** (sidebar focused, browsing sessions): The main pane connects to the highlighted session's sidecar in read-only mode — requests the ring buffer and streams output, but does not send `{Action: "attach"}`. No input is forwarded. Switching the highlighted session disconnects the previous preview and connects to the new one.
+
+**Attached mode** (main pane focused, after pressing Enter): The main pane sends `{Action: "attach"}` to claim the attach slot. All keystrokes are forwarded to the sidecar. The session is fully interactive.
+
+### Input Path (Attached Mode)
 
 ```
 Physical keystroke
@@ -128,11 +144,9 @@ Physical keystroke
   -> Read from em input pipe, send to sidecar as send_input
 ```
 
-All other keys pass through to Claude Code, including Ctrl+C, Ctrl+Z, Ctrl+D, escape, arrow keys, Tab, Enter, function keys.
-
 ### Configurability
 
-The prefix key (Option/Alt) is configurable in `config.yaml` as a safety valve in case of conflicts:
+The sidebar toggle key is configurable in `config.yaml`:
 
 ```yaml
 keybindings:
@@ -156,7 +170,7 @@ keybindings:
 | v Done               |                                        |
 |   . cleanup-v2       |                                        |
 +----------------------+----------------------------------------+
-| * auth-fix | working | Option+S: sidebar | Option+J/K: switch |
+| * auth-fix | working | Option+S: sidebar                      |
 +----------------------+----------------------------------------+
 ```
 
