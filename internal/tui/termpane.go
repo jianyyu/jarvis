@@ -99,12 +99,11 @@ func (tp *TermPane) View() string {
 	return strings.Join(styled, "\n")
 }
 
-// ConnectPreview connects to a sidecar socket in read-only preview mode.
-// It requests the ring buffer catch-up and starts streaming output, but
-// does NOT send an "attach" action. The emulator is reset before connecting.
+// ConnectPreview connects to a sidecar socket and prepares for streaming.
+// It does NOT request a buffer or send "attach" — those happen in Attach().
+// The emulator is reset before connecting.
 func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 	tp.mu.Lock()
-	// If already connected, disconnect first.
 	if tp.connected {
 		tp.mu.Unlock()
 		tp.Disconnect()
@@ -121,30 +120,16 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 		return fmt.Errorf("connect to sidecar: %w", err)
 	}
 
-	// Set a deadline for the initial handshake so we don't block forever.
-	conn.SetDeadline(time.Now().Add(3 * time.Second))
-
 	codec := protocol.NewCodec(conn)
 
-	// Request ring buffer catch-up.
-	err = codec.Send(protocol.Request{
-		Action: "get_buffer",
-		Lines:  5000,
-	})
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("request buffer: %w", err)
-	}
-
-	// Clear the deadline for normal streaming.
-	conn.SetDeadline(time.Time{})
-
 	// Tell the sidecar our pane dimensions so its PTY output fits.
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
 	codec.Send(protocol.Request{
 		Action: "resize",
 		Cols:   tp.cols,
 		Rows:   tp.rows,
 	})
+	conn.SetDeadline(time.Time{})
 
 	tp.mu.Lock()
 	tp.conn = conn
@@ -155,6 +140,8 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 	tp.stopCh = make(chan struct{})
 	tp.mu.Unlock()
 
+	// Start output goroutine — it will receive the buffer data once
+	// Attach() sends the "attach" action.
 	go tp.streamOutput()
 	return nil
 }
@@ -341,7 +328,17 @@ func (tp *TermPane) streamOutput() {
 					log.Printf("termpane: base64 decode error: %v", err)
 					continue
 				}
-				tp.emulator.Write(raw)
+				// Write in chunks to avoid holding the SafeEmulator's
+				// internal lock for too long, which blocks Render()/View().
+				const chunkSize = 4096
+				for len(raw) > 0 {
+					n := chunkSize
+					if n > len(raw) {
+						n = len(raw)
+					}
+					tp.emulator.Write(raw[:n])
+					raw = raw[n:]
+				}
 			}
 
 		case "session_ended":
