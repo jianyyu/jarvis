@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"jarvis/internal/protocol"
 
@@ -115,10 +116,13 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
 	tp.mu.Unlock()
 
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("connect to sidecar: %w", err)
 	}
+
+	// Set a deadline for the initial handshake so we don't block forever.
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 	codec := protocol.NewCodec(conn)
 
@@ -131,6 +135,9 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 		conn.Close()
 		return fmt.Errorf("request buffer: %w", err)
 	}
+
+	// Clear the deadline for normal streaming.
+	conn.SetDeadline(time.Time{})
 
 	tp.mu.Lock()
 	tp.conn = conn

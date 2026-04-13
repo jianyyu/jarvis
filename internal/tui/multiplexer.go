@@ -84,16 +84,17 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tickMsg:
+		// Single refresh timer — don't duplicate with statusPollMsg.
 		return m, tea.Batch(m.sidebar.RefreshItems(), tickEvery())
 
 	case refreshMsg:
 		m.sidebar.HandleRefresh(msg.items)
-		cmd := m.maybeUpdatePreview()
 		m.updateStatusBar()
-		return m, cmd
+		return m, nil
 
 	case statusPollMsg:
-		return m, tea.Batch(m.sidebar.RefreshItems(), statusPollEvery())
+		// Status updates piggyback on the tick refresh. Just reschedule.
+		return m, statusPollEvery()
 
 	case attachMsg:
 		// Session created via sidebar command — attach to it.
@@ -217,6 +218,20 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, attachCmd
 	}
+
+	// After navigation keys, update the preview pane.
+	switch msg.String() {
+	case "up", "down", "j", "k":
+		previewCmd := m.maybeUpdatePreview()
+		m.updateStatusBar()
+		if previewCmd != nil {
+			if cmd != nil {
+				return m, tea.Batch(cmd, previewCmd)
+			}
+			return m, previewCmd
+		}
+	}
+
 	return m, cmd
 }
 
