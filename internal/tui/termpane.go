@@ -15,13 +15,9 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
-// sidecarOutputMsg carries decoded output from the sidecar to the main
-// Bubble Tea goroutine, where it is written to the VT emulator.
-type sidecarOutputMsg struct {
-	data      []byte
-	isBuffer  bool // true for initial buffer dump
-	sessionID string
-}
+// termPaneRedrawMsg is a lightweight signal that the VT emulator has new
+// content and View() should be called. Sent at a fixed rate, not per-chunk.
+type termPaneRedrawMsg struct{}
 
 // sidecarEndedMsg signals that the session's sidecar has exited.
 type sidecarEndedMsg struct {
@@ -71,23 +67,6 @@ func (tp *TermPane) SetProgram(p *tea.Program) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	tp.program = p
-}
-
-// HandleOutput writes decoded sidecar output to the VT emulator.
-// Called from the main Bubble Tea goroutine via Update().
-func (tp *TermPane) HandleOutput(data []byte, isBuffer bool) {
-	if isBuffer {
-		const maxBufferBytes = 16384
-		if len(data) > maxBufferBytes {
-			data = data[len(data)-maxBufferBytes:]
-		}
-	}
-	tp.mu.Lock()
-	em := tp.emulator
-	tp.mu.Unlock()
-	if em != nil {
-		em.Write(data)
-	}
 }
 
 // IsAttached returns true if the pane is in full interactive mode.
@@ -371,68 +350,86 @@ func (tp *TermPane) streamOutput() {
 	tp.mu.Unlock()
 	log.Printf("streamOutput: started for session %s", sid)
 
+	// Redraw ticker: notify Bubble Tea at most 30fps to re-render.
+	// This prevents flooding the terminal with renders during output bursts.
+	redrawTicker := time.NewTicker(33 * time.Millisecond)
+	defer redrawTicker.Stop()
+	dirty := false
+
+	go func() {
+		for range redrawTicker.C {
+			if !dirty {
+				continue
+			}
+			dirty = false
+			tp.mu.Lock()
+			prog := tp.program
+			tp.mu.Unlock()
+			if prog != nil {
+				prog.Send(termPaneRedrawMsg{})
+			}
+		}
+	}()
+
 	for {
 		tp.mu.Lock()
 		stopCh := tp.stopCh
 		codec := tp.codec
-		prog := tp.program
-		sessID := tp.sessionID
+		em := tp.emulator
 		tp.mu.Unlock()
 
 		if stopCh == nil || codec == nil {
-			log.Printf("streamOutput: exiting (nil stopCh/codec)")
 			return
 		}
 
 		select {
 		case <-stopCh:
-			log.Printf("streamOutput: exiting (stopCh closed)")
 			return
 		default:
 		}
 
-		log.Printf("streamOutput: waiting for data (prog=%v)...", prog != nil)
 		var resp protocol.Response
 		if err := codec.Receive(&resp); err != nil {
 			select {
 			case <-stopCh:
-				log.Printf("streamOutput: exiting (stopCh closed after error)")
 			default:
 				log.Printf("streamOutput: error: %v", err)
 			}
 			return
 		}
-		log.Printf("streamOutput: got event=%s datalen=%d", resp.Event, len(resp.Data))
 
 		switch resp.Event {
 		case "buffer":
-			if resp.Data != "" {
+			if resp.Data != "" && em != nil {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
 					continue
 				}
-				log.Printf("streamOutput: sending buffer msg (%d raw bytes)...", len(raw))
-				if prog != nil {
-					prog.Send(sidecarOutputMsg{data: raw, isBuffer: true, sessionID: sessID})
+				const maxBufferBytes = 16384
+				if len(raw) > maxBufferBytes {
+					raw = raw[len(raw)-maxBufferBytes:]
 				}
-				log.Printf("streamOutput: buffer msg sent")
+				em.Write(raw)
+				dirty = true
 			}
 
 		case "output":
-			if resp.Data != "" {
+			if resp.Data != "" && em != nil {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
 					continue
 				}
-				if prog != nil {
-					prog.Send(sidecarOutputMsg{data: raw, isBuffer: false, sessionID: sessID})
-				}
+				em.Write(raw)
+				dirty = true
 			}
 
 		case "session_ended":
 			log.Printf("streamOutput: session ended (exit code %d)", resp.ExitCode)
+			tp.mu.Lock()
+			prog := tp.program
+			tp.mu.Unlock()
 			if prog != nil {
-				prog.Send(sidecarEndedMsg{sessionID: sessID, exitCode: resp.ExitCode})
+				prog.Send(sidecarEndedMsg{sessionID: sid, exitCode: resp.ExitCode})
 			}
 			return
 		}

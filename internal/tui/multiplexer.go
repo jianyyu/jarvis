@@ -119,12 +119,8 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateStatusBar()
 		return m, nil
 
-	case sidecarOutputMsg:
-		// Write sidecar output to the VT emulator in the main goroutine.
-		// This avoids concurrency issues with SafeEmulator.
-		if msg.sessionID == m.termPane.SessionID() {
-			m.termPane.HandleOutput(msg.data, msg.isBuffer)
-		}
+	case termPaneRedrawMsg:
+		// The VT emulator has new content — just return to trigger View().
 		return m, nil
 
 	case sidecarEndedMsg:
