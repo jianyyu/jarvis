@@ -19,8 +19,6 @@ import (
 
 // ── Multiplexer-specific messages ──────────────────────────────────────
 
-type statusPollMsg struct{}
-
 type previewConnectedMsg struct{ sessionID string }
 
 type sessionAttachedMsg struct{ sessionID string }
@@ -73,13 +71,7 @@ func (m *Multiplexer) SetProgram(p *tea.Program) {
 // Init is called once when the program starts. It kicks off the first
 // data load, the periodic refresh timer, and the status poll timer.
 func (m Multiplexer) Init() tea.Cmd {
-	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), statusPollEvery(), redrawTick())
-}
-
-func statusPollEvery() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-		return statusPollMsg{}
-	})
+	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), redrawTick())
 }
 
 // redrawTick triggers a re-render at ~5fps so the term pane shows
@@ -111,10 +103,6 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateStatusBar()
 		return m, nil
 
-	case statusPollMsg:
-		// Status updates piggyback on the tick refresh. Just reschedule.
-		return m, statusPollEvery()
-
 	case attachMsg:
 		// Session created via sidebar command — attach to it.
 		return m, m.attachToSession(msg.sessionID)
@@ -134,6 +122,7 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sidecarEndedMsg:
 		log.Printf("mux: session %s ended (exit %d)", msg.sessionID, msg.exitCode)
+		m.termPane.Disconnect() // clean up dead connection so re-attach works
 		m.focus.SetActiveSession(false)
 		m.focus.SetFocus(FocusSidebar)
 		m.sidebar.SetFocused(true)

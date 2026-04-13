@@ -245,18 +245,6 @@ func TestKeyToBytes_MultipleRunes(t *testing.T) {
 	}
 }
 
-func TestMultiplexer_StatusPollMsg(t *testing.T) {
-	cfg := &config.Config{}
-	m := NewMultiplexer(cfg)
-
-	// statusPollMsg should return a non-nil cmd (reschedule).
-	model, cmd := m.Update(statusPollMsg{})
-	if cmd == nil {
-		t.Error("expected non-nil cmd for statusPollMsg")
-	}
-	_ = model
-}
-
 func TestMultiplexer_RefreshMsg(t *testing.T) {
 	cfg := &config.Config{}
 	m := NewMultiplexer(cfg)
