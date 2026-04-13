@@ -62,6 +62,12 @@ func NewMultiplexer(cfg *config.Config) Multiplexer {
 	}
 }
 
+// SetProgram passes the Bubble Tea program reference to the TermPane so
+// background goroutines can send messages to the main Update loop.
+func (m *Multiplexer) SetProgram(p *tea.Program) {
+	m.termPane.SetProgram(p)
+}
+
 // ── Bubble Tea lifecycle ───────────────────────────────────────────────
 
 // Init is called once when the program starts. It kicks off the first
@@ -121,6 +127,21 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.previewSessionID = msg.sessionID
 		m.updateStatusBar()
 		return m, nil
+
+	case sidecarOutputMsg:
+		// Write sidecar output to the VT emulator in the main goroutine.
+		// This avoids concurrency issues with SafeEmulator.
+		if msg.sessionID == m.termPane.SessionID() {
+			m.termPane.HandleOutput(msg.data, msg.isBuffer)
+		}
+		return m, nil
+
+	case sidecarEndedMsg:
+		log.Printf("mux: session %s ended (exit %d)", msg.sessionID, msg.exitCode)
+		m.focus.SetActiveSession(false)
+		m.focus.SetFocus(FocusSidebar)
+		m.sidebar.SetFocused(true)
+		return m, m.sidebar.RefreshItems()
 
 	case sessionAttachFailedMsg:
 		if msg.err != nil {

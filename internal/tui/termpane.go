@@ -11,8 +11,23 @@ import (
 
 	"jarvis/internal/protocol"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/vt"
 )
+
+// sidecarOutputMsg carries decoded output from the sidecar to the main
+// Bubble Tea goroutine, where it is written to the VT emulator.
+type sidecarOutputMsg struct {
+	data      []byte
+	isBuffer  bool // true for initial buffer dump
+	sessionID string
+}
+
+// sidecarEndedMsg signals that the session's sidecar has exited.
+type sidecarEndedMsg struct {
+	sessionID string
+	exitCode  int
+}
 
 // TermPane wraps a VT emulator and a sidecar socket connection.
 // It supports two modes: preview (read-only output streaming) and
@@ -30,8 +45,9 @@ type TermPane struct {
 	attached  bool
 	sessionID string
 
-	stopCh chan struct{}
-	closed bool
+	stopCh  chan struct{}
+	closed  bool
+	program *tea.Program // for sending messages from streamOutput goroutine
 }
 
 // NewTermPane creates a new TermPane with a VT emulator sized to cols x rows.
@@ -46,6 +62,31 @@ func NewTermPane(cols, rows int) *TermPane {
 		emulator: vt.NewSafeEmulator(cols, rows),
 		cols:     cols,
 		rows:     rows,
+	}
+}
+
+// SetProgram sets the Bubble Tea program reference for sending messages
+// from the streamOutput goroutine back to the main Update loop.
+func (tp *TermPane) SetProgram(p *tea.Program) {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	tp.program = p
+}
+
+// HandleOutput writes decoded sidecar output to the VT emulator.
+// Called from the main Bubble Tea goroutine via Update().
+func (tp *TermPane) HandleOutput(data []byte, isBuffer bool) {
+	if isBuffer {
+		const maxBufferBytes = 16384
+		if len(data) > maxBufferBytes {
+			data = data[len(data)-maxBufferBytes:]
+		}
+	}
+	tp.mu.Lock()
+	em := tp.emulator
+	tp.mu.Unlock()
+	if em != nil {
+		em.Write(data)
 	}
 }
 
@@ -325,23 +366,21 @@ func (tp *TermPane) Close() {
 // decodes base64-encoded output data, and writes it to the VT emulator.
 // It handles "output", "buffer", and "session_ended" events.
 func (tp *TermPane) streamOutput() {
-	log.Printf("streamOutput: started for session %s", tp.sessionID)
-	loopCount := 0
-	for {
-		loopCount++
-		if loopCount%1000 == 0 {
-			log.Printf("streamOutput: loop iteration %d", loopCount)
-		}
+	tp.mu.Lock()
+	sid := tp.sessionID
+	tp.mu.Unlock()
+	log.Printf("streamOutput: started for session %s", sid)
 
-		// Check if we should stop, and capture emulator/codec under lock.
+	for {
 		tp.mu.Lock()
 		stopCh := tp.stopCh
 		codec := tp.codec
-		em := tp.emulator // capture to avoid race with ConnectPreview
+		prog := tp.program
+		sessID := tp.sessionID
 		tp.mu.Unlock()
 
-		if stopCh == nil || codec == nil || em == nil {
-			log.Printf("streamOutput: exiting (nil stopCh/codec/emulator)")
+		if stopCh == nil || codec == nil {
+			log.Printf("streamOutput: exiting (nil stopCh/codec)")
 			return
 		}
 
@@ -362,7 +401,6 @@ func (tp *TermPane) streamOutput() {
 			}
 			return
 		}
-		log.Printf("streamOutput: event=%s datalen=%d", resp.Event, len(resp.Data))
 
 		switch resp.Event {
 		case "buffer":
@@ -371,11 +409,9 @@ func (tp *TermPane) streamOutput() {
 				if err != nil {
 					continue
 				}
-				const maxBufferBytes = 16384
-				if len(raw) > maxBufferBytes {
-					raw = raw[len(raw)-maxBufferBytes:]
+				if prog != nil {
+					prog.Send(sidecarOutputMsg{data: raw, isBuffer: true, sessionID: sessID})
 				}
-				em.Write(raw)
 			}
 
 		case "output":
@@ -384,11 +420,16 @@ func (tp *TermPane) streamOutput() {
 				if err != nil {
 					continue
 				}
-				em.Write(raw)
+				if prog != nil {
+					prog.Send(sidecarOutputMsg{data: raw, isBuffer: false, sessionID: sessID})
+				}
 			}
 
 		case "session_ended":
-			log.Printf("termpane: session ended (exit code %d)", resp.ExitCode)
+			log.Printf("streamOutput: session ended (exit code %d)", resp.ExitCode)
+			if prog != nil {
+				prog.Send(sidecarEndedMsg{sessionID: sessID, exitCode: resp.ExitCode})
+			}
 			return
 		}
 	}
