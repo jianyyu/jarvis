@@ -365,8 +365,9 @@ func (m Multiplexer) View() string {
 	// Compose horizontally: sidebar | border | termpane
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, border, termView)
 
-	// Compose vertically: body over status bar
-	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
+	// Compose vertically: body over status bar.
+	// Hide cursor to prevent VT emulator cursor from leaking through.
+	return "\x1b[?25l" + lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
 }
 
 // ── keyToBytes ─────────────────────────────────────────────────────────

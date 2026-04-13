@@ -139,6 +139,13 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 	// Clear the deadline for normal streaming.
 	conn.SetDeadline(time.Time{})
 
+	// Tell the sidecar our pane dimensions so its PTY output fits.
+	codec.Send(protocol.Request{
+		Action: "resize",
+		Cols:   tp.cols,
+		Rows:   tp.rows,
+	})
+
 	tp.mu.Lock()
 	tp.conn = conn
 	tp.codec = codec
