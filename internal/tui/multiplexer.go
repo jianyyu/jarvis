@@ -177,21 +177,17 @@ func (m Multiplexer) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Multiplexer) handleToggleFocus() (tea.Model, tea.Cmd) {
 	switch m.focus.Current() {
 	case FocusTermPane:
-		// Detach from session and return to sidebar.
+		// Detach from session but keep connection alive for quick re-attach.
 		m.termPane.Detach()
-		m.focus.SetActiveSession(false)
+		// Keep activeSession=true so re-attach doesn't need a full reconnect.
 		m.focus.SetFocus(FocusSidebar)
 		m.sidebar.SetFocused(true)
 		return m, nil
 
 	case FocusSidebar:
-		if m.focus.HasActiveSession() {
-			// Re-attach to existing session.
-			return m, m.reattachToSession()
-		}
-		// If no active session but we have a preview, attach to it.
 		if m.termPane.IsConnected() && m.termPane.SessionID() != "" {
-			return m, m.attachToSession(m.termPane.SessionID())
+			// Re-attach to the existing connection (fast, no reconnect).
+			return m, m.reattachToSession()
 		}
 		return m, nil
 	}
@@ -333,11 +329,8 @@ func (m Multiplexer) View() string {
 		bodyHeight = 1
 	}
 
-	// Render sidebar.
-	sidebarView := lipgloss.NewStyle().
-		Width(m.sidebarWidth).
-		Height(bodyHeight).
-		Render(m.sidebar.View())
+	// Render sidebar. It already produces fixed-width output internally.
+	sidebarView := m.sidebar.View()
 
 	// Render border column.
 	borderColor := "240" // dim when term pane is focused
@@ -352,15 +345,11 @@ func (m Multiplexer) View() string {
 	}
 	border := strings.Join(borderLines, "\n")
 
-	// Render term pane.
-	termWidth := m.width - m.sidebarWidth - 1
-	if termWidth < 1 {
-		termWidth = 1
-	}
-	termView := lipgloss.NewStyle().
-		Width(termWidth).
-		Height(bodyHeight).
-		Render(m.termPane.View())
+	// Render term pane. Skip lipgloss Width/Height wrapping — the VT
+	// emulator already produces output at the correct dimensions, and
+	// re-processing ANSI-heavy output through lipgloss is very slow
+	// (causes input latency on every keystroke).
+	termView := m.termPane.View()
 
 	// Compose horizontally: sidebar | border | termpane
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, border, termView)
