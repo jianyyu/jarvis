@@ -73,7 +73,10 @@ func (tp *TermPane) SessionID() string {
 // WriteOutput feeds raw bytes directly into the VT emulator.
 // This is primarily useful for testing.
 func (tp *TermPane) WriteOutput(data []byte) {
-	tp.emulator.Write(data)
+	tp.mu.Lock()
+	em := tp.emulator
+	tp.mu.Unlock()
+	em.Write(data)
 }
 
 // View returns the rendered emulator screen if connected, or a placeholder
@@ -83,11 +86,12 @@ func (tp *TermPane) View() string {
 	connected := tp.connected
 	rows := tp.rows
 	cols := tp.cols
+	em := tp.emulator // capture under lock to avoid race with ConnectPreview
 	tp.mu.Unlock()
 
 	var content string
-	if connected {
-		content = tp.emulator.Render()
+	if connected && em != nil {
+		content = em.Render()
 	} else {
 		content = tp.placeholderView(cols, rows)
 	}
@@ -315,61 +319,66 @@ func (tp *TermPane) Close() {
 // decodes base64-encoded output data, and writes it to the VT emulator.
 // It handles "output", "buffer", and "session_ended" events.
 func (tp *TermPane) streamOutput() {
+	log.Printf("streamOutput: started for session %s", tp.sessionID)
+	loopCount := 0
 	for {
-		// Check if we should stop.
+		loopCount++
+		if loopCount%1000 == 0 {
+			log.Printf("streamOutput: loop iteration %d", loopCount)
+		}
+
+		// Check if we should stop, and capture emulator/codec under lock.
 		tp.mu.Lock()
 		stopCh := tp.stopCh
 		codec := tp.codec
+		em := tp.emulator // capture to avoid race with ConnectPreview
 		tp.mu.Unlock()
 
-		if stopCh == nil || codec == nil {
+		if stopCh == nil || codec == nil || em == nil {
+			log.Printf("streamOutput: exiting (nil stopCh/codec/emulator)")
 			return
 		}
 
 		select {
 		case <-stopCh:
+			log.Printf("streamOutput: exiting (stopCh closed)")
 			return
 		default:
 		}
 
 		var resp protocol.Response
 		if err := codec.Receive(&resp); err != nil {
-			// Connection closed or error — stop streaming.
 			select {
 			case <-stopCh:
-				// Expected shutdown.
+				log.Printf("streamOutput: exiting (stopCh closed after error)")
 			default:
-				log.Printf("termpane: stream error: %v", err)
+				log.Printf("streamOutput: error: %v", err)
 			}
 			return
 		}
+		log.Printf("streamOutput: event=%s datalen=%d", resp.Event, len(resp.Data))
 
 		switch resp.Event {
 		case "buffer":
-			// The sidecar dumps the entire ring buffer on attach (up to
-			// 10K lines / megabytes). Only keep the tail to avoid freezing
-			// the VT emulator. This gives recent context without blocking
-			// Render() for seconds.
 			if resp.Data != "" {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
 					continue
 				}
-				const maxBufferBytes = 16384 // 16KB of recent output
+				const maxBufferBytes = 16384
 				if len(raw) > maxBufferBytes {
 					raw = raw[len(raw)-maxBufferBytes:]
 				}
-				tp.emulator.Write(raw)
+				em.Write(raw)
 			}
 
 		case "output":
-			// Live output — write immediately, small chunks.
 			if resp.Data != "" {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
 					continue
 				}
-				tp.emulator.Write(raw)
+				em.Write(raw)
 			}
 
 		case "session_ended":

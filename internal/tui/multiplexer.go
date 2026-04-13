@@ -5,6 +5,7 @@ package tui
 // that replaces the old full-screen Dashboard for interactive use.
 
 import (
+	"log"
 	"strings"
 	"time"
 
@@ -77,6 +78,17 @@ func statusPollEvery() tea.Cmd {
 
 // Update is the main event handler.
 func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg.(type) {
+	case tea.KeyMsg, tea.WindowSizeMsg:
+		// don't log these, too noisy
+	case sessionAttachedMsg, sessionAttachFailedMsg:
+		log.Printf("mux: Update got %T", msg)
+	case refreshMsg:
+		// log.Printf("mux: Update got refreshMsg") // too noisy
+	default:
+		// log.Printf("mux: Update got %T", msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.handleWindowSize(msg)
@@ -102,6 +114,7 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.attachToSession(msg.sessionID)
 
 	case sessionAttachedMsg:
+		log.Printf("mux: sessionAttachedMsg received for %s, switching focus to TermPane", msg.sessionID)
 		m.focus.SetActiveSession(true)
 		m.focus.SetFocus(FocusTermPane)
 		m.sidebar.SetFocused(false)
@@ -211,7 +224,7 @@ func (m Multiplexer) reattachToSession() tea.Cmd {
 func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cmd, attachSessionID := m.sidebar.Update(msg)
 	if attachSessionID != "" {
-		// User pressed Enter on a session — attach to it.
+		log.Printf("mux: sidebar returned attachSessionID=%s", attachSessionID)
 		attachCmd := m.attachToSession(attachSessionID)
 		if cmd != nil {
 			return m, tea.Batch(cmd, attachCmd)
@@ -232,6 +245,7 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	raw := keyToBytes(msg)
 	if raw != "" {
+		log.Printf("mux: termkey %q -> %d bytes", msg.String(), len(raw))
 		m.termPane.SendInput(raw)
 	}
 	return m, nil
@@ -246,31 +260,45 @@ func (m Multiplexer) attachToSession(sessionID string) tea.Cmd {
 	termPane := m.termPane
 	mgr := m.sidebar.Manager()
 	return func() tea.Msg {
+		log.Printf("mux: attachToSession %s start", sessionID)
+
 		if termPane.SessionID() == sessionID && termPane.IsConnected() {
-			// Already connected to this session — just attach.
+			log.Printf("mux: already connected, re-attaching")
 			if err := termPane.Attach(); err != nil {
+				log.Printf("mux: re-attach failed: %v", err)
 				return sessionAttachFailedMsg{err: err}
 			}
 			return sessionAttachedMsg{sessionID: sessionID}
 		}
 
 		socketPath := sidecar.SocketPath(sessionID)
+		log.Printf("mux: socket=%s", socketPath)
 
 		// Check if sidecar is alive. If not, resume (restart) it.
 		if !session.PingSidecar(socketPath) {
+			log.Printf("mux: sidecar dead, resuming...")
 			if err := mgr.ResumeByID(sessionID); err != nil {
+				log.Printf("mux: resume failed: %v", err)
 				return sessionAttachFailedMsg{err: err}
 			}
+			log.Printf("mux: resume succeeded")
 			socketPath = sidecar.SocketPath(sessionID)
+		} else {
+			log.Printf("mux: sidecar alive")
 		}
 
 		// Connect and attach.
+		log.Printf("mux: ConnectPreview...")
 		if err := termPane.ConnectPreview(socketPath, sessionID); err != nil {
+			log.Printf("mux: ConnectPreview failed: %v", err)
 			return sessionAttachFailedMsg{err: err}
 		}
+		log.Printf("mux: Attach...")
 		if err := termPane.Attach(); err != nil {
+			log.Printf("mux: Attach failed: %v", err)
 			return sessionAttachFailedMsg{err: err}
 		}
+		log.Printf("mux: attached OK")
 		return sessionAttachedMsg{sessionID: sessionID}
 	}
 }
@@ -334,6 +362,7 @@ func (m Multiplexer) updateStatusBar() {
 //	| StatusBar                         |
 //	+-----------------------------------+
 func (m Multiplexer) View() string {
+	t0 := time.Now()
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
 
@@ -345,6 +374,7 @@ func (m Multiplexer) View() string {
 
 	// Render sidebar. It already produces fixed-width output internally.
 	sidebarView := m.sidebar.View()
+	t1 := time.Now()
 
 	// Render border column.
 	borderColor := "240" // dim when term pane is focused
@@ -363,14 +393,23 @@ func (m Multiplexer) View() string {
 	// emulator already produces output at the correct dimensions, and
 	// re-processing ANSI-heavy output through lipgloss is very slow
 	// (causes input latency on every keystroke).
+	t2 := time.Now()
 	termView := m.termPane.View()
+	t3 := time.Now()
 
 	// Compose horizontally: sidebar | border | termpane
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, border, termView)
+	t4 := time.Now()
 
 	// Compose vertically: body over status bar.
 	// Hide cursor to prevent VT emulator cursor from leaking through.
-	return "\x1b[?25l" + lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
+	result := "\x1b[?25l" + lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
+	t5 := time.Now()
+
+	log.Printf("View: sidebar=%v termPane=%v join=%v total=%v termViewLen=%d",
+		t1.Sub(t0), t3.Sub(t2), t4.Sub(t3), t5.Sub(t0), len(termView))
+
+	return result
 }
 
 // ── keyToBytes ─────────────────────────────────────────────────────────
