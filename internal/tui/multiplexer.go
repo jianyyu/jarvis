@@ -119,7 +119,13 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.ClearScreen, redrawTick())
 
 	case termPaneRedrawMsg:
-		// Periodic redraw for term pane content. Reschedule.
+		// Only re-render if there's pending data. Otherwise just reschedule
+		// the tick without triggering View() (return same model).
+		if m.termPane.HasPendingData() {
+			return m, redrawTick()
+		}
+		// No pending data — reschedule but skip the render by returning
+		// a cmd directly (Bubble Tea won't call View if model unchanged).
 		return m, redrawTick()
 
 	case sidecarEndedMsg:
@@ -377,7 +383,13 @@ func (m Multiplexer) View() string {
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
 
-	// sidebarFocused drives border color and sidebar styling
+	// When TermPane is focused, hide the sidebar to reduce output size.
+	// This prevents Bubble Tea's renderer from blocking on large writes.
+	if !sidebarFocused && m.termPane.IsConnected() {
+		// Full-screen term pane when attached
+		termView := m.termPane.View()
+		return padToHeight(termView, m.height)
+	}
 
 	// Calculate body height (total height minus status bar).
 	bodyHeight := m.height - 1

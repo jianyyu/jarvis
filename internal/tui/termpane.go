@@ -74,6 +74,13 @@ func (tp *TermPane) SetProgram(p *tea.Program) {
 	tp.program = p
 }
 
+// HasPendingData returns true if there's buffered data from streamOutput.
+func (tp *TermPane) HasPendingData() bool {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return len(tp.pendingData) > 0
+}
+
 // IsAttached returns true if the pane is in full interactive mode.
 func (tp *TermPane) IsAttached() bool {
 	tp.mu.Lock()
