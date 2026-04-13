@@ -219,17 +219,11 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, attachCmd
 	}
 
-	// After navigation keys, update the preview pane.
+	// Update status bar on navigation (no preview connection — too slow
+	// with many sessions). Preview connects only on Enter (attach).
 	switch msg.String() {
 	case "up", "down", "j", "k":
-		previewCmd := m.maybeUpdatePreview()
 		m.updateStatusBar()
-		if previewCmd != nil {
-			if cmd != nil {
-				return m, tea.Batch(cmd, previewCmd)
-			}
-			return m, previewCmd
-		}
 	}
 
 	return m, cmd
