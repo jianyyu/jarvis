@@ -251,7 +251,7 @@ func (s *Sidebar) handleDashboardKey(msg tea.KeyMsg) (tea.Cmd, string) {
 		if item == nil {
 			break
 		}
-		if item.IsSession() && item.Status != "archived" {
+		if item.IsSession() && item.Status == model.StatusActive {
 			s.SaveState()
 			return nil, item.ID
 		}
@@ -468,8 +468,9 @@ func (s *Sidebar) View() string {
 		b.WriteString(helpStyle.Render(help))
 	}
 
-	// Constrain to fixed width.
-	return lipgloss.NewStyle().Width(s.width).Render(b.String())
+	// Constrain to fixed width and exact height for stable layout.
+	constrained := lipgloss.NewStyle().Width(s.width).Render(b.String())
+	return padToHeight(constrained, s.height)
 }
 
 // renderItem produces a single formatted line for one list item.

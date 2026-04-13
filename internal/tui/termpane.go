@@ -77,26 +77,50 @@ func (tp *TermPane) WriteOutput(data []byte) {
 }
 
 // View returns the rendered emulator screen if connected, or a placeholder
-// when disconnected.
+// when disconnected. Always produces exactly tp.rows lines.
 func (tp *TermPane) View() string {
 	tp.mu.Lock()
 	connected := tp.connected
+	rows := tp.rows
+	cols := tp.cols
 	tp.mu.Unlock()
 
+	var content string
 	if connected {
-		return tp.emulator.Render()
+		content = tp.emulator.Render()
+	} else {
+		content = tp.placeholderView(cols, rows)
 	}
 
-	// Placeholder for empty state.
-	lines := []string{
-		"Select a session from the sidebar",
-		"or press 'n' to create one",
+	// Ensure exactly 'rows' lines for stable layout with JoinHorizontal.
+	return padToHeight(content, rows)
+}
+
+// placeholderView returns centered placeholder text.
+func (tp *TermPane) placeholderView(cols, rows int) string {
+	lines := make([]string, rows)
+	mid := rows / 2
+	msg1 := "Select a session from the sidebar"
+	msg2 := "or press 'n' to create one"
+	if mid-1 >= 0 && mid-1 < rows {
+		lines[mid-1] = dimStyle.Render(msg1)
 	}
-	var styled []string
-	for _, line := range lines {
-		styled = append(styled, dimStyle.Render(line))
+	if mid < rows {
+		lines[mid] = dimStyle.Render(msg2)
 	}
-	return strings.Join(styled, "\n")
+	return strings.Join(lines, "\n")
+}
+
+// padToHeight ensures s has exactly n lines (pads with empty or truncates).
+func padToHeight(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	for len(lines) < n {
+		lines = append(lines, "")
+	}
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ConnectPreview connects to a sidecar socket and prepares for streaming.
