@@ -138,8 +138,9 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 		tp.mu.Lock()
 	}
 
-	// Reset emulator for fresh session.
-	tp.emulator.Close()
+	// Create fresh emulator. Don't Close() the old one — the old
+	// streamOutput goroutine may still hold a captured reference to it.
+	// It will be GCed after the goroutine exits.
 	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
 	tp.mu.Unlock()
 
@@ -238,9 +239,11 @@ func (tp *TermPane) disconnectLocked() {
 	tp.attached = false
 	tp.sessionID = ""
 
-	// Reset emulator.
-	tp.emulator.Close()
-	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
+	// Do NOT close the old emulator here — the old streamOutput goroutine
+	// may still be calling em.Write() with a captured reference. Closing it
+	// while Write() is running causes hangs. Instead, just orphan it and
+	// let GC clean up after the goroutine exits. A fresh emulator is created
+	// in ConnectPreview.
 }
 
 // SendInput sends keystrokes to the sidecar. Only works in attached mode.
@@ -313,6 +316,9 @@ func (tp *TermPane) Close() {
 	}
 	tp.closed = true
 	tp.disconnectLocked()
+	if tp.emulator != nil {
+		tp.emulator.Close()
+	}
 }
 
 // streamOutput is a goroutine that reads responses from the sidecar codec,
