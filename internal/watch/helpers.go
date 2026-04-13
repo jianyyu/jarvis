@@ -57,8 +57,6 @@ func placeSessionInFolder(sessionID, folderID string) {
 func sendInputToSession(sessionID, text string) {
 	socketPath := sidecar.SocketPath(sessionID)
 
-	time.Sleep(2 * time.Second)
-
 	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
 	if err != nil {
 		log.Printf("watch: sendInput connect failed for %s: %v", sessionID, err)
@@ -71,6 +69,49 @@ func sendInputToSession(sessionID, text string) {
 	if err := codec.Send(protocol.Request{Action: "send_input", Text: text}); err != nil {
 		log.Printf("watch: sendInput failed for %s: %v", sessionID, err)
 	}
+}
+
+// waitForSessionReady polls the sidecar status until Claude Code has finished
+// initializing and is idle (ready for input). Returns true if the session
+// became ready, false on timeout.
+func waitForSessionReady(sessionID string, timeout time.Duration) bool {
+	socketPath := sidecar.SocketPath(sessionID)
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		state := getSidecarState(socketPath)
+		if state == "idle" {
+			return true
+		}
+		if state == "exited" {
+			log.Printf("watch: session %s exited while waiting for ready", sessionID)
+			return false
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	log.Printf("watch: session %s did not become ready within %s", sessionID, timeout)
+	return false
+}
+
+// getSidecarState queries the sidecar for its current state.
+func getSidecarState(socketPath string) string {
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	codec := protocol.NewCodec(conn)
+	if err := codec.Send(protocol.Request{Action: "get_status"}); err != nil {
+		return ""
+	}
+	var resp protocol.Response
+	if err := codec.Receive(&resp); err != nil {
+		return ""
+	}
+	return resp.State
 }
 
 // isSidecarAlive checks if a session's sidecar is responding.

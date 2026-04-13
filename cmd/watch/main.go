@@ -40,7 +40,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "      folder: \"Slack\"")
 		fmt.Fprintln(os.Stderr, "    gmail:")
 		fmt.Fprintln(os.Stderr, "      enabled: true")
-		fmt.Fprintln(os.Stderr, "      poll_interval: 600")
+		fmt.Fprintln(os.Stderr, "      poll_interval: 3600")
 		fmt.Fprintln(os.Stderr, "      folder: \"Gmail\"")
 		fmt.Fprintln(os.Stderr, "    github:")
 		fmt.Fprintln(os.Stderr, "      enabled: true")
