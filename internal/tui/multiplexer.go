@@ -377,7 +377,7 @@ func (m Multiplexer) View() string {
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
 
-	_ = sidebarFocused // used below
+	// sidebarFocused drives border color and sidebar styling
 
 	// Calculate body height (total height minus status bar).
 	bodyHeight := m.height - 1

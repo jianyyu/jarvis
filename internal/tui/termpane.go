@@ -44,6 +44,11 @@ type TermPane struct {
 	stopCh  chan struct{}
 	closed  bool
 	program *tea.Program // for sending messages from streamOutput goroutine
+
+	// pendingData accumulates raw bytes from streamOutput. Drained and
+	// written to the emulator in View() on the main goroutine, avoiding
+	// concurrent Write/Render on SafeEmulator which causes deadlocks.
+	pendingData []byte
 }
 
 // NewTermPane creates a new TermPane with a VT emulator sized to cols x rows.
@@ -106,19 +111,24 @@ func (tp *TermPane) View() string {
 	connected := tp.connected
 	rows := tp.rows
 	cols := tp.cols
-	em := tp.emulator // capture under lock to avoid race with ConnectPreview
+	em := tp.emulator
+
+	// Drain pending data and write to emulator on the main goroutine.
+	// This avoids concurrent Write/Render on SafeEmulator.
+	pending := tp.pendingData
+	tp.pendingData = nil
 	tp.mu.Unlock()
 
 	var content string
 	if connected && em != nil {
-		// Sanitize: strip non-SGR escape sequences that confuse Bubble Tea's
-		// diff renderer (cursor positioning, screen modes, etc.).
+		if len(pending) > 0 {
+			em.Write(pending)
+		}
 		content = sanitizeForBubbletea(em.Render())
 	} else {
 		content = tp.placeholderView(cols, rows)
 	}
 
-	// Ensure exactly 'rows' lines for stable layout with JoinHorizontal.
 	return padToHeight(content, rows)
 }
 
@@ -351,7 +361,6 @@ func (tp *TermPane) streamOutput() {
 		tp.mu.Lock()
 		stopCh := tp.stopCh
 		codec := tp.codec
-		em := tp.emulator
 		tp.mu.Unlock()
 
 		if stopCh == nil || codec == nil {
@@ -376,7 +385,7 @@ func (tp *TermPane) streamOutput() {
 
 		switch resp.Event {
 		case "buffer":
-			if resp.Data != "" && em != nil {
+			if resp.Data != "" {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
 					continue
@@ -385,16 +394,20 @@ func (tp *TermPane) streamOutput() {
 				if len(raw) > maxBufferBytes {
 					raw = raw[len(raw)-maxBufferBytes:]
 				}
-				em.Write(raw)
+				tp.mu.Lock()
+				tp.pendingData = append(tp.pendingData, raw...)
+				tp.mu.Unlock()
 			}
 
 		case "output":
-			if resp.Data != "" && em != nil {
+			if resp.Data != "" {
 				raw, err := base64.StdEncoding.DecodeString(resp.Data)
 				if err != nil {
 					continue
 				}
-				em.Write(raw)
+				tp.mu.Lock()
+				tp.pendingData = append(tp.pendingData, raw...)
+				tp.mu.Unlock()
 			}
 
 		case "session_ended":
