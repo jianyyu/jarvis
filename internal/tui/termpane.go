@@ -129,10 +129,16 @@ func (tp *TermPane) View() string {
 	cols := tp.cols
 	em := tp.emulator
 
-	// Drain pending data and write to emulator on the main goroutine.
-	// This avoids concurrent Write/Render on SafeEmulator.
+	// Drain pending data. Cap how much we write per frame so View()
+	// stays fast (< 5ms). Excess carries over to the next frame.
+	const maxBytesPerFrame = 8192
 	pending := tp.pendingData
-	tp.pendingData = nil
+	if len(pending) > maxBytesPerFrame {
+		tp.pendingData = pending[maxBytesPerFrame:]
+		pending = pending[:maxBytesPerFrame]
+	} else {
+		tp.pendingData = nil
+	}
 	tp.mu.Unlock()
 
 	var content string

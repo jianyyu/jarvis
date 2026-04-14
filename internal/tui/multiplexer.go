@@ -381,15 +381,7 @@ func (m Multiplexer) View() string {
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
 
-	// When TermPane is focused and has content, go fullscreen.
-	// Don't switch to fullscreen with an empty emulator — the dramatic
-	// size change (10KB sidebar → 44 bytes) causes Bubble Tea's renderer
-	// to produce a huge diff that blocks the SSH terminal write.
-	if !sidebarFocused && m.termPane.IsConnected() && m.termPane.HasContent() {
-		termView := m.termPane.View()
-		result := padToHeight(termView, m.height)
-		return result
-	}
+	// Always show sidebar + termpane layout (no fullscreen mode).
 
 	// Calculate body height (total height minus status bar).
 	bodyHeight := m.height - 1
