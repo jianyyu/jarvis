@@ -5,7 +5,6 @@ package tui
 // that replaces the old full-screen Dashboard for interactive use.
 
 import (
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -260,16 +259,12 @@ func (m Multiplexer) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Forward mouse events to the sidecar as escape sequences.
-	// This enables Claude Code's built-in mouse scroll.
 	var raw string
 	switch msg.Type {
 	case tea.MouseWheelUp:
-		// Mouse wheel up = scroll up. Send as button 64 (wheel up).
-		raw = fmt.Sprintf("\x1b[<%d;%d;%dM", 64, msg.X-m.sidebarWidth, msg.Y)
+		raw = "\x1b[5~" // Page Up
 	case tea.MouseWheelDown:
-		// Mouse wheel down = scroll down. Send as button 65 (wheel down).
-		raw = fmt.Sprintf("\x1b[<%d;%d;%dM", 65, msg.X-m.sidebarWidth, msg.Y)
+		raw = "\x1b[6~" // Page Down
 	}
 
 	if raw != "" {
