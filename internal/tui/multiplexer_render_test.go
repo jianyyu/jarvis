@@ -121,8 +121,8 @@ func TestMultiplexer_FullProgramRender(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// If we get here, the program is still responsive. Send quit.
-	p.Send(tea.KeyMsg{Type: tea.KeyEscape})
+	// If we get here, the program is still responsive. Detach then quit.
+	p.Send(tea.KeyMsg{Type: tea.KeyCtrlBackslash})
 	time.Sleep(100 * time.Millisecond)
 	p.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 

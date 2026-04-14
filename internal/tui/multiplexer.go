@@ -179,11 +179,10 @@ func (m Multiplexer) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd
 
 func (m Multiplexer) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Global: Toggle focus between sidebar and term pane.
-	// Esc (always works), Alt+S, or Ctrl+\.
-	if msg.Type == tea.KeyEscape || msg.String() == "alt+s" || msg.Type == tea.KeyCtrlBackslash {
-		if m.focus.Current() == FocusTermPane {
-			return m.handleToggleFocus()
-		}
+	// Ctrl+\ (same as old jarvis detach key) or Alt+S (if terminal has Meta enabled).
+	// NOT Esc — Claude Code uses Esc to cancel operations.
+	if msg.Type == tea.KeyCtrlBackslash || msg.String() == "alt+s" {
+		return m.handleToggleFocus()
 	}
 
 	// Global: q and ctrl+c quit (only when sidebar is focused and in normal mode).
