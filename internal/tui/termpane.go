@@ -143,7 +143,7 @@ func (tp *TermPane) View() string {
 
 	// Drain pending data. Cap how much we write per frame so View()
 	// stays fast (< 5ms). Excess carries over to the next frame.
-	const maxBytesPerFrame = 8192
+	const maxBytesPerFrame = 65536 // 64KB — enough for a full screen update
 	pending := tp.pendingData
 	if len(pending) > maxBytesPerFrame {
 		tp.pendingData = pending[maxBytesPerFrame:]

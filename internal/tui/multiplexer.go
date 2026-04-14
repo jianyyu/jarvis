@@ -74,9 +74,9 @@ func (m Multiplexer) Init() tea.Cmd {
 	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), redrawTick())
 }
 
-// redrawTick triggers a re-render so the term pane shows new output (5fps).
+// redrawTick triggers a re-render so the term pane shows new output (10fps).
 func redrawTick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return termPaneRedrawMsg{}
 	})
 }
@@ -256,7 +256,12 @@ func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if raw != "" {
 		m.termPane.SendInput(raw)
 	}
-	return m, nil
+	// Schedule a quick redraw so the response appears without waiting
+	// for the next tick. Use a short delay to let the sidecar process
+	// the input and send back output.
+	return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+		return termPaneRedrawMsg{}
+	})
 }
 
 // ── Session attachment ─────────────────────────────────────────────────
