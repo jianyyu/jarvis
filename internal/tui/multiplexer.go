@@ -5,6 +5,7 @@ package tui
 // that replaces the old full-screen Dashboard for interactive use.
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -90,6 +91,9 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tickMsg:
 		// Single refresh timer — don't duplicate with statusPollMsg.
@@ -249,6 +253,32 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m Multiplexer) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.focus.Current() != FocusTermPane {
+		return m, nil
+	}
+
+	// Forward mouse events to the sidecar as escape sequences.
+	// This enables Claude Code's built-in mouse scroll.
+	var raw string
+	switch msg.Type {
+	case tea.MouseWheelUp:
+		// Mouse wheel up = scroll up. Send as button 64 (wheel up).
+		raw = fmt.Sprintf("\x1b[<%d;%d;%dM", 64, msg.X-m.sidebarWidth, msg.Y)
+	case tea.MouseWheelDown:
+		// Mouse wheel down = scroll down. Send as button 65 (wheel down).
+		raw = fmt.Sprintf("\x1b[<%d;%d;%dM", 65, msg.X-m.sidebarWidth, msg.Y)
+	}
+
+	if raw != "" {
+		m.termPane.SendInput(raw)
+		return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+			return termPaneRedrawMsg{}
+		})
+	}
+	return m, nil
 }
 
 func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
