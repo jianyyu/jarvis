@@ -49,8 +49,6 @@ type TermPane struct {
 	// written to the emulator in View() on the main goroutine, avoiding
 	// concurrent Write/Render on SafeEmulator which causes deadlocks.
 	pendingData     []byte
-	hasReceivedData bool // true after first data received
-	textBuf         []byte // plain text accumulator (no VT emulation)
 }
 
 // NewTermPane creates a new TermPane with a VT emulator sized to cols x rows.
@@ -98,14 +96,6 @@ func (tp *TermPane) HasPendingData() bool {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	return len(tp.pendingData) > 0
-}
-
-// HasContent returns true if the emulator has received any data.
-func (tp *TermPane) HasContent() bool {
-	tp.mu.Lock()
-	hasData := tp.hasReceivedData
-	tp.mu.Unlock()
-	return hasData
 }
 
 // IsAttached returns true if the pane is in full interactive mode.
@@ -315,9 +305,7 @@ func (tp *TermPane) disconnectLocked() {
 	tp.connected = false
 	tp.attached = false
 	tp.sessionID = ""
-	tp.hasReceivedData = false
 	tp.pendingData = nil
-	tp.textBuf = nil
 
 	// Do NOT close the old emulator here — the old streamOutput goroutine
 	// may still be calling em.Write() with a captured reference. Closing it
@@ -444,7 +432,6 @@ func (tp *TermPane) streamOutput() {
 				}
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
-				tp.hasReceivedData = true
 				tp.mu.Unlock()
 			}
 
@@ -456,7 +443,6 @@ func (tp *TermPane) streamOutput() {
 				}
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
-				tp.hasReceivedData = true
 				tp.mu.Unlock()
 			}
 
@@ -485,54 +471,3 @@ func sanitizeForBubbletea(s string) string {
 	return nonSGRescapeRe.ReplaceAllString(s, "")
 }
 
-// stripAllANSI removes ALL ANSI escape sequences from raw bytes,
-// leaving only plain text. This is used instead of a VT emulator
-// because charmbracelet/x/vt hangs on Claude Code's ANSI output.
-var allANSIre = regexp.MustCompile(`\x1b[\x20-\x7e]|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[PX^_][^\x1b]*(?:\x1b\\)?|\r`)
-
-func stripAllANSI(data []byte) []byte {
-	return allANSIre.ReplaceAll(data, nil)
-}
-
-// sanitizeVTInput strips escape sequences from raw PTY data that can
-// cause the VT parser to hang. These include:
-//   - OSC (Operating System Command): \x1b] ... (BEL or ST)  — window titles, hyperlinks
-//   - DCS (Device Control String): \x1bP ... ST
-//   - APC (Application Program Command): \x1b_ ... ST
-//   - PM (Privacy Message): \x1b^ ... ST
-//   - SOS (Start of String): \x1bX ... ST
-//
-// These string-type sequences can span chunk boundaries, leaving the
-// parser waiting for a terminator that's in the next chunk — which
-// blocks the Write() call.
-func sanitizeVTInput(data []byte) []byte {
-	out := make([]byte, 0, len(data))
-	i := 0
-	for i < len(data) {
-		if data[i] == 0x1b && i+1 < len(data) {
-			next := data[i+1]
-			// OSC, DCS, APC, PM, SOS — skip until ST (\x1b\\) or BEL (\x07)
-			if next == ']' || next == 'P' || next == '_' || next == '^' || next == 'X' {
-				j := i + 2
-				for j < len(data) {
-					if data[j] == 0x07 { // BEL terminates OSC
-						j++
-						break
-					}
-					if data[j] == 0x1b && j+1 < len(data) && data[j+1] == '\\' { // ST
-						j += 2
-						break
-					}
-					j++
-				}
-				// If we didn't find a terminator, skip the whole thing
-				// (incomplete sequence at chunk boundary).
-				i = j
-				continue
-			}
-		}
-		out = append(out, data[i])
-		i++
-	}
-	return out
-}

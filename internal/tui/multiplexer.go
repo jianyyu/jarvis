@@ -83,8 +83,6 @@ func redrawTick() tea.Cmd {
 
 // Update is the main event handler.
 func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Uncomment for debugging:
-	// log.Printf("mux: Update got %T", msg)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -107,7 +105,6 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.attachToSession(msg.sessionID)
 
 	case sessionAttachedMsg:
-		log.Printf("mux: sessionAttachedMsg received for %s, switching focus to TermPane", msg.sessionID)
 		m.focus.SetActiveSession(true)
 		m.focus.SetFocus(FocusTermPane)
 		m.sidebar.SetFocused(false)
@@ -237,7 +234,6 @@ func (m Multiplexer) reattachToSession() tea.Cmd {
 func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cmd, attachSessionID := m.sidebar.Update(msg)
 	if attachSessionID != "" {
-		log.Printf("mux: sidebar returned attachSessionID=%s", attachSessionID)
 		attachCmd := m.attachToSession(attachSessionID)
 		if cmd != nil {
 			return m, tea.Batch(cmd, attachCmd)
@@ -258,7 +254,6 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	raw := keyToBytes(msg)
 	if raw != "" {
-		log.Printf("mux: termkey %q -> %d bytes", msg.String(), len(raw))
 		m.termPane.SendInput(raw)
 	}
 	return m, nil
@@ -273,45 +268,30 @@ func (m Multiplexer) attachToSession(sessionID string) tea.Cmd {
 	termPane := m.termPane
 	mgr := m.sidebar.Manager()
 	return func() tea.Msg {
-		log.Printf("mux: attachToSession %s start", sessionID)
-
 		if termPane.SessionID() == sessionID && termPane.IsConnected() {
-			log.Printf("mux: already connected, re-attaching")
 			if err := termPane.Attach(); err != nil {
-				log.Printf("mux: re-attach failed: %v", err)
 				return sessionAttachFailedMsg{err: err}
 			}
 			return sessionAttachedMsg{sessionID: sessionID}
 		}
 
 		socketPath := sidecar.SocketPath(sessionID)
-		log.Printf("mux: socket=%s", socketPath)
 
 		// Check if sidecar is alive. If not, resume (restart) it.
 		if !session.PingSidecar(socketPath) {
-			log.Printf("mux: sidecar dead, resuming...")
 			if err := mgr.ResumeByID(sessionID); err != nil {
-				log.Printf("mux: resume failed: %v", err)
+				log.Printf("mux: resume failed for %s: %v", sessionID, err)
 				return sessionAttachFailedMsg{err: err}
 			}
-			log.Printf("mux: resume succeeded")
 			socketPath = sidecar.SocketPath(sessionID)
-		} else {
-			log.Printf("mux: sidecar alive")
 		}
 
-		// Connect and attach.
-		log.Printf("mux: ConnectPreview...")
 		if err := termPane.ConnectPreview(socketPath, sessionID); err != nil {
-			log.Printf("mux: ConnectPreview failed: %v", err)
 			return sessionAttachFailedMsg{err: err}
 		}
-		log.Printf("mux: Attach...")
 		if err := termPane.Attach(); err != nil {
-			log.Printf("mux: Attach failed: %v", err)
 			return sessionAttachFailedMsg{err: err}
 		}
-		log.Printf("mux: attached OK")
 		return sessionAttachedMsg{sessionID: sessionID}
 	}
 }
