@@ -50,6 +50,7 @@ type TermPane struct {
 	// concurrent Write/Render on SafeEmulator which causes deadlocks.
 	pendingData     []byte
 	hasReceivedData bool // true after first data received
+	textBuf         []byte // plain text accumulator (no VT emulation)
 }
 
 // NewTermPane creates a new TermPane with a VT emulator sized to cols x rows.
@@ -123,11 +124,14 @@ func (tp *TermPane) WriteOutput(data []byte) {
 // View returns the rendered emulator screen if connected, or a placeholder
 // when disconnected. Always produces exactly tp.rows lines.
 func (tp *TermPane) View() string {
-	tp.mu.Lock()
+	if !tp.mu.TryLock() {
+		// Lock is held — skip this frame to avoid blocking Bubble Tea.
+		log.Printf("termPane.View: LOCK CONTENTION — skipping frame")
+		return padToHeight("  Loading...", tp.rows)
+	}
 	connected := tp.connected
 	rows := tp.rows
 	cols := tp.cols
-	em := tp.emulator
 
 	// Drain pending data. Cap how much we write per frame so View()
 	// stays fast (< 5ms). Excess carries over to the next frame.
@@ -142,14 +146,32 @@ func (tp *TermPane) View() string {
 	tp.mu.Unlock()
 
 	var content string
-	if connected && em != nil {
+	if connected {
+		// Simple line-buffer approach: strip ANSI, split into lines,
+		// keep the last 'rows' lines. No VT emulator — it hangs on
+		// Claude Code's ANSI output.
 		if len(pending) > 0 {
-			// Sanitize input: remove sequences that can hang the VT parser
-			// (OSC, DCS, APC strings that span chunk boundaries).
-			pending = sanitizeVTInput(pending)
-			em.Write(pending)
+			clean := stripAllANSI(pending)
+			tp.mu.Lock()
+			tp.textBuf = append(tp.textBuf, clean...)
+			tp.mu.Unlock()
 		}
-		content = sanitizeForBubbletea(em.Render())
+
+		tp.mu.Lock()
+		lines := strings.Split(string(tp.textBuf), "\n")
+		tp.mu.Unlock()
+
+		// Keep last 'rows' lines
+		if len(lines) > rows {
+			lines = lines[len(lines)-rows:]
+		}
+		// Truncate each line to cols
+		for i, line := range lines {
+			if len(line) > cols {
+				lines[i] = line[:cols]
+			}
+		}
+		content = strings.Join(lines, "\n")
 	} else {
 		content = tp.placeholderView(cols, rows)
 	}
@@ -297,6 +319,7 @@ func (tp *TermPane) disconnectLocked() {
 	tp.sessionID = ""
 	tp.hasReceivedData = false
 	tp.pendingData = nil
+	tp.textBuf = nil
 
 	// Do NOT close the old emulator here — the old streamOutput goroutine
 	// may still be calling em.Write() with a captured reference. Closing it
@@ -462,6 +485,15 @@ var nonSGRescapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-LN-Za-ln-z]|\x1b\[\?[0-
 // output so Bubble Tea's renderer can diff it correctly.
 func sanitizeForBubbletea(s string) string {
 	return nonSGRescapeRe.ReplaceAllString(s, "")
+}
+
+// stripAllANSI removes ALL ANSI escape sequences from raw bytes,
+// leaving only plain text. This is used instead of a VT emulator
+// because charmbracelet/x/vt hangs on Claude Code's ANSI output.
+var allANSIre = regexp.MustCompile(`\x1b[\x20-\x7e]|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[PX^_][^\x1b]*(?:\x1b\\)?|\r`)
+
+func stripAllANSI(data []byte) []byte {
+	return allANSIre.ReplaceAll(data, nil)
 }
 
 // sanitizeVTInput strips escape sequences from raw PTY data that can
