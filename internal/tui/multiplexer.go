@@ -74,10 +74,9 @@ func (m Multiplexer) Init() tea.Cmd {
 	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), redrawTick())
 }
 
-// redrawTick triggers a re-render so the term pane shows new output
-// from the VT emulator. 1fps to avoid saturating SSH stdout buffer.
+// redrawTick triggers a re-render so the term pane shows new output (5fps).
 func redrawTick() tea.Cmd {
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
 		return termPaneRedrawMsg{}
 	})
 }
@@ -376,18 +375,9 @@ func (m Multiplexer) updateStatusBar() {
 //	+----------+------------------------+
 //	| StatusBar                         |
 //	+-----------------------------------+
-var viewSeq int
-
 func (m Multiplexer) View() string {
-	viewSeq++
-	log.Printf("View#%d ENTER focus=%v", viewSeq, m.focus.Current())
-	t0 := time.Now()
 	sidebarFocused := m.focus.Current() == FocusSidebar
 	m.sidebar.SetFocused(sidebarFocused)
-
-	if !sidebarFocused {
-		log.Printf("View#%d: step1 sidebar.View start", viewSeq)
-	}
 
 	// Calculate body height (total height minus status bar).
 	bodyHeight := m.height - 1
@@ -396,9 +386,8 @@ func (m Multiplexer) View() string {
 	}
 
 	sidebarView := m.sidebar.View()
-	t1 := time.Now()
-	if !sidebarFocused { log.Printf("View#%d: step2 sidebar done", viewSeq) }
 
+	// Border column between sidebar and term pane.
 	borderColor := "240"
 	if sidebarFocused { borderColor = "99" }
 	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(borderColor))
@@ -407,25 +396,11 @@ func (m Multiplexer) View() string {
 		borderLines = append(borderLines, borderStyle.Render("\u2502"))
 	}
 	border := strings.Join(borderLines, "\n")
-	if !sidebarFocused { log.Printf("View#%d: step3 border done", viewSeq) }
 
-	t2 := time.Now()
 	termView := m.termPane.View()
-	t3 := time.Now()
-	if !sidebarFocused { log.Printf("View#%d: step4 termPane done len=%d", viewSeq, len(termView)) }
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, border, termView)
-	t4 := time.Now()
-	if !sidebarFocused { log.Printf("View#%d: step5 join done len=%d", viewSeq, len(body)) }
-
-	// Compose vertically: body over status bar.
-	result := lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
-	t5 := time.Now()
-
-	log.Printf("View#%d EXIT: sidebar=%v termPane=%v join=%v total=%v termViewLen=%d resultLen=%d",
-		viewSeq, t1.Sub(t0), t3.Sub(t2), t4.Sub(t3), t5.Sub(t0), len(termView), len(result))
-
-	return result
+	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
 }
 
 // ── keyToBytes ─────────────────────────────────────────────────────────

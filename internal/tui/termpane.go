@@ -61,10 +61,27 @@ func NewTermPane(cols, rows int) *TermPane {
 	if rows <= 0 {
 		rows = 24
 	}
+	em := vt.NewSafeEmulator(cols, rows)
+	// Drain emulator responses continuously. Claude Code sends terminal
+	// queries (\x1b[c, \x1b[>0q) that the emulator answers via Read().
+	// Without draining, Write() blocks waiting for someone to read.
+	go drainEmulatorResponses(em)
 	return &TermPane{
-		emulator: vt.NewSafeEmulator(cols, rows),
+		emulator: em,
 		cols:     cols,
 		rows:     rows,
+	}
+}
+
+// drainEmulatorResponses continuously reads from the emulator to prevent
+// Write() from blocking on terminal query responses.
+func drainEmulatorResponses(em *vt.SafeEmulator) {
+	buf := make([]byte, 4096)
+	for {
+		_, err := em.Read(buf)
+		if err != nil {
+			return
+		}
 	}
 }
 
@@ -132,6 +149,7 @@ func (tp *TermPane) View() string {
 	connected := tp.connected
 	rows := tp.rows
 	cols := tp.cols
+	em := tp.emulator
 
 	// Drain pending data. Cap how much we write per frame so View()
 	// stays fast (< 5ms). Excess carries over to the next frame.
@@ -146,32 +164,11 @@ func (tp *TermPane) View() string {
 	tp.mu.Unlock()
 
 	var content string
-	if connected {
-		// Simple line-buffer approach: strip ANSI, split into lines,
-		// keep the last 'rows' lines. No VT emulator — it hangs on
-		// Claude Code's ANSI output.
+	if connected && em != nil {
 		if len(pending) > 0 {
-			clean := stripAllANSI(pending)
-			tp.mu.Lock()
-			tp.textBuf = append(tp.textBuf, clean...)
-			tp.mu.Unlock()
+			em.Write(pending)
 		}
-
-		tp.mu.Lock()
-		lines := strings.Split(string(tp.textBuf), "\n")
-		tp.mu.Unlock()
-
-		// Keep last 'rows' lines
-		if len(lines) > rows {
-			lines = lines[len(lines)-rows:]
-		}
-		// Truncate each line to cols
-		for i, line := range lines {
-			if len(line) > cols {
-				lines[i] = line[:cols]
-			}
-		}
-		content = strings.Join(lines, "\n")
+		content = sanitizeForBubbletea(em.Render())
 	} else {
 		content = tp.placeholderView(cols, rows)
 	}
@@ -221,6 +218,7 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 	// streamOutput goroutine may still hold a captured reference to it.
 	// It will be GCed after the goroutine exits.
 	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
+	go drainEmulatorResponses(tp.emulator)
 	tp.mu.Unlock()
 
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
