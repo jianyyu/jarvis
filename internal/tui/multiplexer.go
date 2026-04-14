@@ -74,10 +74,10 @@ func (m Multiplexer) Init() tea.Cmd {
 	return tea.Batch(m.sidebar.RefreshItems(), tickEvery(), redrawTick())
 }
 
-// redrawTick triggers a re-render at ~5fps so the term pane shows
-// new output from the VT emulator. No prog.Send, no extra goroutines.
+// redrawTick triggers a re-render so the term pane shows new output
+// from the VT emulator. 1fps to avoid saturating SSH stdout buffer.
 func redrawTick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return termPaneRedrawMsg{}
 	})
 }

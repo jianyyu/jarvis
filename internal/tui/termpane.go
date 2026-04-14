@@ -144,6 +144,9 @@ func (tp *TermPane) View() string {
 	var content string
 	if connected && em != nil {
 		if len(pending) > 0 {
+			// Sanitize input: remove sequences that can hang the VT parser
+			// (OSC, DCS, APC strings that span chunk boundaries).
+			pending = sanitizeVTInput(pending)
 			em.Write(pending)
 		}
 		content = sanitizeForBubbletea(em.Render())
@@ -459,4 +462,47 @@ var nonSGRescapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-LN-Za-ln-z]|\x1b\[\?[0-
 // output so Bubble Tea's renderer can diff it correctly.
 func sanitizeForBubbletea(s string) string {
 	return nonSGRescapeRe.ReplaceAllString(s, "")
+}
+
+// sanitizeVTInput strips escape sequences from raw PTY data that can
+// cause the VT parser to hang. These include:
+//   - OSC (Operating System Command): \x1b] ... (BEL or ST)  — window titles, hyperlinks
+//   - DCS (Device Control String): \x1bP ... ST
+//   - APC (Application Program Command): \x1b_ ... ST
+//   - PM (Privacy Message): \x1b^ ... ST
+//   - SOS (Start of String): \x1bX ... ST
+//
+// These string-type sequences can span chunk boundaries, leaving the
+// parser waiting for a terminator that's in the next chunk — which
+// blocks the Write() call.
+func sanitizeVTInput(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	i := 0
+	for i < len(data) {
+		if data[i] == 0x1b && i+1 < len(data) {
+			next := data[i+1]
+			// OSC, DCS, APC, PM, SOS — skip until ST (\x1b\\) or BEL (\x07)
+			if next == ']' || next == 'P' || next == '_' || next == '^' || next == 'X' {
+				j := i + 2
+				for j < len(data) {
+					if data[j] == 0x07 { // BEL terminates OSC
+						j++
+						break
+					}
+					if data[j] == 0x1b && j+1 < len(data) && data[j+1] == '\\' { // ST
+						j += 2
+						break
+					}
+					j++
+				}
+				// If we didn't find a terminator, skip the whole thing
+				// (incomplete sequence at chunk boundary).
+				i = j
+				continue
+			}
+		}
+		out = append(out, data[i])
+		i++
+	}
+	return out
 }
