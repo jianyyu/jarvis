@@ -231,14 +231,16 @@ func (tp *TermPane) renderScrollback(em *vt.SafeEmulator, rows, cols, scrollOffs
 	result := make([]string, 0, rows)
 	for i := startLine; i < endLine; i++ {
 		if i < sbLen {
-			// This line comes from scrollback.
+			// This line comes from scrollback — render with ANSI styles.
 			line := sb.Line(i)
 			var text strings.Builder
 			for _, cell := range line {
-				if cell.Content != "" {
+				if cell.Content == "" {
+					text.WriteByte(' ')
+				} else if cell.Style.IsZero() {
 					text.WriteString(cell.Content)
 				} else {
-					text.WriteByte(' ')
+					text.WriteString(cell.Style.Styled(cell.Content))
 				}
 			}
 			result = append(result, text.String())
