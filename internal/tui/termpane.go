@@ -587,10 +587,8 @@ func (tp *TermPane) streamOutput() {
 				if err != nil {
 					continue
 				}
-				const maxBufferBytes = 16384
-				if len(raw) > maxBufferBytes {
-					raw = raw[len(raw)-maxBufferBytes:]
-				}
+				// Accept the full sidecar buffer so the scrollback
+				// has as much history as possible.
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
 				tp.mu.Unlock()

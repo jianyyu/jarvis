@@ -298,13 +298,10 @@ func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Drop partial SGR mouse sequences that leak through Bubble Tea's
 	// parser when scrolling fast. The terminal sends \x1b[<Cb;Cx;CyM but
-	// the parser may consume the \x1b as a bare Escape, leaving [<...M
-	// as rune input.
-	if msg.Type == tea.KeyRunes {
-		s := string(msg.Runes)
-		if len(s) > 2 && s[0] == '[' && s[1] == '<' {
-			return m, nil
-		}
+	// splits can leave fragments like "[<65;89;25M", "<65;89;25M", or
+	// just "M" as rune input.
+	if msg.Type == tea.KeyRunes && isSGRMouseFragment(string(msg.Runes)) {
+		return m, nil
 	}
 
 	// Any other typing auto-scrolls to bottom (live view).
@@ -575,5 +572,22 @@ func keyToBytes(msg tea.KeyMsg) string {
 	}
 
 	return ""
+}
+
+// isSGRMouseFragment returns true if s looks like a fragment of an SGR mouse
+// escape sequence (\x1b[<Cb;Cx;Cy[Mm]). When scrolling fast, Bubble Tea's
+// parser can split sequences across reads, producing rune input like
+// "[<65;89;25M", "<65;89;25M", "65;89;25M", etc.
+func isSGRMouseFragment(s string) bool {
+	// Only digits, semicolons, '<', '[', 'M', 'm' are valid in fragments.
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == ';', r == '<', r == '[', r == 'M', r == 'm':
+		default:
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
