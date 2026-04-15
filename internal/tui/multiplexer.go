@@ -296,6 +296,17 @@ func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Drop partial SGR mouse sequences that leak through Bubble Tea's
+	// parser when scrolling fast. The terminal sends \x1b[<Cb;Cx;CyM but
+	// the parser may consume the \x1b as a bare Escape, leaving [<...M
+	// as rune input.
+	if msg.Type == tea.KeyRunes {
+		s := string(msg.Runes)
+		if len(s) > 2 && s[0] == '[' && s[1] == '<' {
+			return m, nil
+		}
+	}
+
 	// Any other typing auto-scrolls to bottom (live view).
 	if m.termPane.IsScrolledUp() {
 		m.termPane.ScrollToBottom()
