@@ -144,6 +144,12 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateStatusBar()
 		return m, nil
 
+	case emulatorResponseMsg:
+		// Forward emulator responses (terminal query answers, SendMouse
+		// output) to the sidecar PTY so the inner app receives them.
+		m.termPane.ForwardInput(msg.data)
+		return m, nil
+
 	case statusMsgClear:
 		return m, nil
 	}
@@ -259,31 +265,46 @@ func (m Multiplexer) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	var raw string
-	switch msg.Type {
-	case tea.MouseWheelUp:
-		raw = "\x1b[5~" // Page Up
-	case tea.MouseWheelDown:
-		raw = "\x1b[6~" // Page Down
+	ev := tea.MouseEvent(msg)
+	switch ev.Button {
+	case tea.MouseButtonWheelUp:
+		m.termPane.ScrollUp(3)
+		return m, nil
+	case tea.MouseButtonWheelDown:
+		m.termPane.ScrollDown(3)
+		return m, nil
 	}
 
-	if raw != "" {
-		m.termPane.SendInput(raw)
-		return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-			return termPaneRedrawMsg{}
-		})
-	}
 	return m, nil
 }
 
 func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Viewport scroll: PageUp/Down and arrow keys scroll the TermPane's
+	// scrollback buffer (managed by the VT emulator, not Claude Code).
+	switch msg.Type {
+	case tea.KeyPgUp:
+		m.termPane.ScrollUp(m.height / 2)
+		return m, nil
+	case tea.KeyPgDown:
+		m.termPane.ScrollDown(m.height / 2)
+		return m, nil
+	}
+
+	// Escape returns to live view when scrolled up.
+	if msg.Type == tea.KeyEscape && m.termPane.IsScrolledUp() {
+		m.termPane.ScrollToBottom()
+		return m, nil
+	}
+
+	// Any other typing auto-scrolls to bottom (live view).
+	if m.termPane.IsScrolledUp() {
+		m.termPane.ScrollToBottom()
+	}
+
 	raw := keyToBytes(msg)
 	if raw != "" {
 		m.termPane.SendInput(raw)
 	}
-	// Schedule a quick redraw so the response appears without waiting
-	// for the next tick. Use a short delay to let the sidecar process
-	// the input and send back output.
 	return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
 		return termPaneRedrawMsg{}
 	})
@@ -544,3 +565,4 @@ func keyToBytes(msg tea.KeyMsg) string {
 
 	return ""
 }
+
