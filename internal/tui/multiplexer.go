@@ -91,10 +91,7 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseMsg:
-		return m.handleMouse(msg)
-
-	case tickMsg:
+case tickMsg:
 		// Single refresh timer — don't duplicate with statusPollMsg.
 		return m, tea.Batch(m.sidebar.RefreshItems(), tickEvery())
 
@@ -260,24 +257,6 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Multiplexer) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.focus.Current() != FocusTermPane {
-		return m, nil
-	}
-
-	ev := tea.MouseEvent(msg)
-	switch ev.Button {
-	case tea.MouseButtonWheelUp:
-		m.termPane.ScrollUp(3)
-		return m, nil
-	case tea.MouseButtonWheelDown:
-		m.termPane.ScrollDown(3)
-		return m, nil
-	}
-
-	return m, nil
-}
-
 func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Viewport scroll: PageUp/Down and arrow keys scroll the TermPane's
 	// scrollback buffer (managed by the VT emulator, not Claude Code).
@@ -293,14 +272,6 @@ func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Escape returns to live view when scrolled up.
 	if msg.Type == tea.KeyEscape && m.termPane.IsScrolledUp() {
 		m.termPane.ScrollToBottom()
-		return m, nil
-	}
-
-	// Drop partial SGR mouse sequences that leak through Bubble Tea's
-	// parser when scrolling fast. The terminal sends \x1b[<Cb;Cx;CyM but
-	// splits can leave fragments like "[<65;89;25M", "<65;89;25M", or
-	// just "M" as rune input.
-	if msg.Type == tea.KeyRunes && isSGRMouseFragment(string(msg.Runes)) {
 		return m, nil
 	}
 
@@ -574,26 +545,4 @@ func keyToBytes(msg tea.KeyMsg) string {
 	return ""
 }
 
-// isSGRMouseFragment returns true if s looks like a fragment of an SGR mouse
-// escape sequence (\x1b[<Cb;Cx;Cy[Mm]). When scrolling fast, Bubble Tea's
-// parser can split sequences across reads, producing rune input like
-// "[<65;89;25M", "<65;89;25M", "65;89;25M", etc.
-func isSGRMouseFragment(s string) bool {
-	if len(s) < 4 {
-		return false // too short — don't eat normal chars like M, m, digits
-	}
-	hasSemicolon := false
-	for _, r := range s {
-		switch {
-		case r >= '0' && r <= '9':
-		case r == ';':
-			hasSemicolon = true
-		case r == '<', r == '[', r == 'M', r == 'm':
-		default:
-			return false
-		}
-	}
-	// Real SGR fragments always contain semicolons (coordinate separators).
-	return hasSemicolon
-}
 
