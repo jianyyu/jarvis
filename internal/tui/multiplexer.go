@@ -91,9 +91,6 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseMsg:
-		return m.handleMouse(msg)
-
 	case tickMsg:
 		// Single refresh timer — don't duplicate with statusPollMsg.
 		return m, tea.Batch(m.sidebar.RefreshItems(), tickEvery())
@@ -260,23 +257,23 @@ func (m Multiplexer) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Multiplexer) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.focus.Current() != FocusTermPane {
+func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Viewport scroll: Shift+Up/Down scrolls 3 lines, Ctrl+Up/Down scrolls half page.
+	// PageUp/PageDown also work if available.
+	switch msg.String() {
+	case "shift+up":
+		m.termPane.ScrollUp(3)
+		return m, nil
+	case "shift+down":
+		m.termPane.ScrollDown(3)
+		return m, nil
+	case "ctrl+up":
+		m.termPane.ScrollUp(m.height / 2)
+		return m, nil
+	case "ctrl+down":
+		m.termPane.ScrollDown(m.height / 2)
 		return m, nil
 	}
-	ev := tea.MouseEvent(msg)
-	switch ev.Button {
-	case tea.MouseButtonWheelUp:
-		m.termPane.ScrollUp(3)
-	case tea.MouseButtonWheelDown:
-		m.termPane.ScrollDown(3)
-	}
-	return m, nil
-}
-
-func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Viewport scroll: PageUp/Down and arrow keys scroll the TermPane's
-	// scrollback buffer (managed by the VT emulator, not Claude Code).
 	switch msg.Type {
 	case tea.KeyPgUp:
 		m.termPane.ScrollUp(m.height / 2)

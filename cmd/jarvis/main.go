@@ -37,7 +37,7 @@ func runDashboard() error {
 	}
 
 	m := tui.NewMultiplexer(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.SetProgram(p)
 	_, err = p.Run()
 	return err
