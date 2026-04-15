@@ -570,7 +570,10 @@ func (tp *TermPane) streamOutput() {
 			select {
 			case <-stopCh:
 			default:
-				log.Printf("streamOutput: error: %v", err)
+				// EOF is normal when the sidecar closes the connection.
+				if err.Error() != "EOF" {
+					log.Printf("streamOutput: error: %v", err)
+				}
 			}
 			return
 		}
