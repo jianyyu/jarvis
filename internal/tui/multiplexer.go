@@ -579,15 +579,21 @@ func keyToBytes(msg tea.KeyMsg) string {
 // parser can split sequences across reads, producing rune input like
 // "[<65;89;25M", "<65;89;25M", "65;89;25M", etc.
 func isSGRMouseFragment(s string) bool {
-	// Only digits, semicolons, '<', '[', 'M', 'm' are valid in fragments.
+	if len(s) < 4 {
+		return false // too short — don't eat normal chars like M, m, digits
+	}
+	hasSemicolon := false
 	for _, r := range s {
 		switch {
 		case r >= '0' && r <= '9':
-		case r == ';', r == '<', r == '[', r == 'M', r == 'm':
+		case r == ';':
+			hasSemicolon = true
+		case r == '<', r == '[', r == 'M', r == 'm':
 		default:
 			return false
 		}
 	}
-	return len(s) > 0
+	// Real SGR fragments always contain semicolons (coordinate separators).
+	return hasSemicolon
 }
 

@@ -245,6 +245,14 @@ func (s *Sidebar) handleDashboardKey(msg tea.KeyMsg) (tea.Cmd, string) {
 			s.adjustScroll()
 		}
 
+	case "esc":
+		// Clear search filter if active.
+		if s.searchQuery != "" {
+			s.searchQuery = ""
+			s.searchInput.SetValue("")
+			return s.RefreshItems(), ""
+		}
+
 	// ── Actions ──
 	case "enter":
 		item := s.SelectedItem()
@@ -252,6 +260,9 @@ func (s *Sidebar) handleDashboardKey(msg tea.KeyMsg) (tea.Cmd, string) {
 			break
 		}
 		if item.IsSession() && item.Status != model.StatusArchived {
+			// Clear search so dashboard is unfiltered when user returns.
+			s.searchQuery = ""
+			s.searchInput.SetValue("")
 			s.SaveState()
 			return nil, item.ID
 		}
