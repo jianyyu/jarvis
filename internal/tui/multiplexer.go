@@ -142,9 +142,9 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case emulatorResponseMsg:
-		// Forward emulator responses (terminal query answers, SendMouse
-		// output) to the sidecar PTY so the inner app receives them.
-		m.termPane.ForwardInput(msg.data)
+		// Emulator generates responses to terminal queries (DA2, etc.)
+		// but forwarding them to Claude Code can cause text to leak into
+		// the input box. Claude Code works fine without them — just drop.
 		return m, nil
 
 	case statusMsgClear:

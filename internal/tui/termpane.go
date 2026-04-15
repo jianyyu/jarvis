@@ -309,14 +309,7 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 	// streamOutput goroutine may still hold a captured reference to it.
 	// It will be GCed after the goroutine exits.
 	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
-	prog := tp.program
-	if prog != nil {
-		// Forward emulator responses (terminal query answers) to the sidecar
-		// PTY so the inner app gets proper terminal capability detection.
-		go forwardEmulatorResponses(tp.emulator, prog)
-	} else {
-		go drainEmulatorResponses(tp.emulator)
-	}
+	go drainEmulatorResponses(tp.emulator)
 	tp.mu.Unlock()
 
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
