@@ -61,11 +61,6 @@ type TermPane struct {
 	// scrollOffset is the number of lines scrolled up from the bottom.
 	// 0 = showing live content (default). >0 = scrolled into history.
 	scrollOffset int
-
-	// sbCache caches rendered scrollback lines. Scrollback lines never
-	// change once pushed, so rendering once is sufficient. Reset on
-	// session switch (ConnectPreview).
-	sbCache map[int]string
 }
 
 // NewTermPane creates a new TermPane with a VT emulator sized to cols x rows.
@@ -236,22 +231,13 @@ func (tp *TermPane) renderScrollback(em *vt.SafeEmulator, rows, cols, scrollOffs
 	result := make([]string, 0, rows)
 	for i := startLine; i < endLine; i++ {
 		if i < sbLen {
-			// Check cache first.
-			if cached, ok := tp.sbCache[i]; ok {
-				result = append(result, cached)
-				continue
-			}
 			// Render scrollback line with StyleDiff for minimal ANSI output.
 			// Skip zero-width cells (second half of wide CJK/emoji chars).
 			line := sb.Line(i)
 			var text strings.Builder
-			var zeroStyle interface{ IsZero() bool }
-			_ = zeroStyle // suppress unused
 			prevStyleStr := ""
 			prevIsZero := true
 			for _, cell := range line {
-				// Skip placeholder cells for wide characters (Width=0 or
-				// empty content following a Width>1 cell).
 				if cell.Width == 0 {
 					continue
 				}
@@ -259,7 +245,6 @@ func (tp *TermPane) renderScrollback(em *vt.SafeEmulator, rows, cols, scrollOffs
 				if content == "" {
 					content = " "
 				}
-				// Emit style change only when needed.
 				curIsZero := cell.Style.IsZero()
 				if curIsZero && !prevIsZero {
 					text.WriteString("\x1b[m")
@@ -278,13 +263,7 @@ func (tp *TermPane) renderScrollback(em *vt.SafeEmulator, rows, cols, scrollOffs
 			if !prevIsZero {
 				text.WriteString("\x1b[m")
 			}
-			rendered := text.String()
-			// Cache it — scrollback lines never change.
-			if tp.sbCache == nil {
-				tp.sbCache = make(map[int]string)
-			}
-			tp.sbCache[i] = rendered
-			result = append(result, rendered)
+			result = append(result, text.String())
 		} else {
 			// This line comes from the current screen.
 			screenIdx := i - sbLen
@@ -352,7 +331,6 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 		tp.emulator.Close()
 	}
 	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
-	tp.sbCache = nil // reset scrollback cache for new session
 	go drainEmulatorResponses(tp.emulator)
 	tp.mu.Unlock()
 
@@ -653,6 +631,14 @@ func (tp *TermPane) streamOutput() {
 				}
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
+				// Cap pendingData to prevent unbounded growth when
+				// output arrives faster than View() can drain. Keep
+				// the most recent 1MB — Claude Code will redraw if
+				// needed.
+				const maxPendingBytes = 1024 * 1024
+				if len(tp.pendingData) > maxPendingBytes {
+					tp.pendingData = tp.pendingData[len(tp.pendingData)-maxPendingBytes:]
+				}
 				tp.mu.Unlock()
 			}
 
