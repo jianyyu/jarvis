@@ -305,9 +305,10 @@ func (tp *TermPane) ConnectPreview(socketPath, sessionID string) error {
 		tp.mu.Lock()
 	}
 
-	// Create fresh emulator. Don't Close() the old one — the old
-	// streamOutput goroutine may still hold a captured reference to it.
-	// It will be GCed after the goroutine exits.
+	// Close old emulator so its drain goroutine exits (Read returns EOF).
+	if tp.emulator != nil {
+		tp.emulator.Close()
+	}
 	tp.emulator = vt.NewSafeEmulator(tp.cols, tp.rows)
 	go drainEmulatorResponses(tp.emulator)
 	tp.mu.Unlock()
@@ -416,15 +417,19 @@ func (tp *TermPane) disconnectLocked() {
 }
 
 // SendInput sends keystrokes to the sidecar. Only works in attached mode.
+// Grabs codec reference under lock then sends outside the lock so View()
+// processing pendingData doesn't block keyboard input.
 func (tp *TermPane) SendInput(data string) {
 	tp.mu.Lock()
-	defer tp.mu.Unlock()
+	attached := tp.attached
+	codec := tp.codec
+	tp.mu.Unlock()
 
-	if !tp.attached || tp.codec == nil {
+	if !attached || codec == nil {
 		return
 	}
 
-	_ = tp.codec.Send(protocol.Request{
+	_ = codec.Send(protocol.Request{
 		Action: "send_input",
 		Text:   data,
 	})
@@ -585,8 +590,13 @@ func (tp *TermPane) streamOutput() {
 				if err != nil {
 					continue
 				}
-				// Accept the full sidecar buffer so the scrollback
-				// has as much history as possible.
+				// Cap initial buffer to prevent pendingData backlog.
+				// 256KB is enough for substantial scrollback without
+				// causing View() to fall behind on emulator writes.
+				const maxBufferBytes = 262144
+				if len(raw) > maxBufferBytes {
+					raw = raw[len(raw)-maxBufferBytes:]
+				}
 				tp.mu.Lock()
 				tp.pendingData = append(tp.pendingData, raw...)
 				tp.mu.Unlock()
