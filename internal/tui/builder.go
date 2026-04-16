@@ -27,8 +27,19 @@ import (
 	"jarvis/internal/ui"
 )
 
+// buildItemListCached creates the item list using only persisted state.
+// No socket I/O — instant even with hundreds of sessions.
+func buildItemListCached() []ListItem {
+	return buildItemListOpt(nil, false)
+}
+
 // buildItemList creates the flat list of items for the dashboard to display.
+// It queries live sidecar status for active sessions (slow with many sessions).
 func buildItemList(mgr *session.Manager) []ListItem {
+	return buildItemListOpt(mgr, true)
+}
+
+func buildItemListOpt(mgr *session.Manager, liveQuery bool) []ListItem {
 
 	sessions, _ := store.ListSessions(nil)
 	folders, _ := store.ListFolders()
@@ -54,7 +65,7 @@ func buildItemList(mgr *session.Manager) []ListItem {
 		if s.ParentID != "" {
 			continue
 		}
-		recentItems = append(recentItems, buildSessionItem(s, 0, mgr))
+		recentItems = append(recentItems, buildSessionItemOpt(s, 0, mgr, liveQuery))
 		if len(recentItems) >= recentMax {
 			break
 		}
@@ -85,7 +96,7 @@ func buildItemList(mgr *session.Manager) []ListItem {
 			continue
 		}
 
-		items := buildFolderItems(f, 0, sessionMap, folderMap, mgr, usedSessions)
+		items := buildFolderItems(f, 0, sessionMap, folderMap, mgr, usedSessions, liveQuery)
 
 		// Sort the group by its most-recently-updated child.
 		var maxTime time.Time
@@ -106,7 +117,7 @@ func buildItemList(mgr *session.Manager) []ListItem {
 			continue
 		}
 		if s.ParentID == "" {
-			item := buildSessionItem(s, 0, mgr)
+			item := buildSessionItemOpt(s, 0, mgr, liveQuery)
 			if s.Status == model.StatusDone {
 				doneItems = append(doneItems, item)
 			} else {
@@ -141,7 +152,7 @@ func buildItemList(mgr *session.Manager) []ListItem {
 
 	// Done folders and their children.
 	for _, f := range doneFolders {
-		folderItems := buildFolderItems(f, 1, sessionMap, folderMap, mgr, usedSessions)
+		folderItems := buildFolderItems(f, 1, sessionMap, folderMap, mgr, usedSessions, liveQuery)
 		doneItems = append(doneItems, folderItems...)
 	}
 
@@ -169,7 +180,7 @@ func buildItemList(mgr *session.Manager) []ListItem {
 }
 
 // buildFolderItems flattens a folder and its children into ListItems.
-func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.Session, folderMap map[string]*model.Folder, mgr *session.Manager, used map[string]bool) []ListItem {
+func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.Session, folderMap map[string]*model.Folder, mgr *session.Manager, used map[string]bool, liveQuery bool) []ListItem {
 	// Count done vs total children for the progress indicator.
 	doneCount := 0
 	totalCount := 0
@@ -203,7 +214,7 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 			if !ok || s.Status == model.StatusArchived {
 				continue
 			}
-			item := buildSessionItem(s, depth+1, mgr)
+			item := buildSessionItemOpt(s, depth+1, mgr, liveQuery)
 			if s.Status == model.StatusDone {
 				doneChildren = append(doneChildren, item)
 			} else {
@@ -216,7 +227,7 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 			if !ok || cf.Status == "archived" {
 				continue
 			}
-			activeChildren = append(activeChildren, buildFolderItems(cf, depth+1, sessionMap, folderMap, mgr, used)...)
+			activeChildren = append(activeChildren, buildFolderItems(cf, depth+1, sessionMap, folderMap, mgr, used, liveQuery)...)
 		}
 	}
 
@@ -231,16 +242,31 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 // buildSessionItem creates a ListItem for a single session, querying its
 // live sidecar status if the session is active.
 func buildSessionItem(s *model.Session, depth int, mgr *session.Manager) ListItem {
+	return buildSessionItemOpt(s, depth, mgr, true)
+}
+
+// buildSessionItemCached creates a ListItem using only cached/persisted state.
+// No socket I/O — instant, safe for frequent refreshes with many sessions.
+func buildSessionItemCached(s *model.Session, depth int) ListItem {
+	return buildSessionItemOpt(s, depth, nil, false)
+}
+
+func buildSessionItemOpt(s *model.Session, depth int, mgr *session.Manager, liveQuery bool) ListItem {
 	state := model.SidecarState("")
 	detail := ""
 
 	if s.Status == model.StatusActive {
-		socketPath := sidecar.SocketPath(s.ID)
-		if session.PingSidecar(socketPath) {
-			st, det, err := session.GetLiveStatus(socketPath)
-			if err == nil {
-				state = st
-				detail = det
+		if liveQuery {
+			socketPath := sidecar.SocketPath(s.ID)
+			if session.PingSidecar(socketPath) {
+				st, det, err := session.GetLiveStatus(socketPath)
+				if err == nil {
+					state = st
+					detail = det
+				}
+			} else {
+				state = model.SidecarState(s.LastKnownState)
+				detail = s.LastKnownDetail
 			}
 		} else {
 			state = model.SidecarState(s.LastKnownState)

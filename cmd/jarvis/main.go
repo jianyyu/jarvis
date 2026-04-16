@@ -36,29 +36,11 @@ func runDashboard() error {
 		return err
 	}
 
-	for {
-		dashboard := tui.NewDashboard(cfg)
-		p := tea.NewProgram(dashboard, tea.WithAltScreen())
-		m, err := p.Run()
-		if err != nil {
-			return err
-		}
-
-		d := m.(tui.Dashboard)
-		sessionID := d.AttachSessionID()
-		if sessionID == "" {
-			return nil // user quit
-		}
-
-		// Attach to session
-		mgr := session.NewManager(cfg)
-		fmt.Printf("Attaching to session... [Ctrl-\\ to detach]\n")
-		mgr.Attach(sessionID)
-
-		// After detach, let terminal settle before restarting bubbletea
-		fmt.Println("\nDetached. Returning to dashboard...")
-		time.Sleep(100 * time.Millisecond)
-	}
+	m := tui.NewMultiplexer(cfg)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	m.SetProgram(p)
+	_, err = p.Run()
+	return err
 }
 
 var newCmd = &cobra.Command{

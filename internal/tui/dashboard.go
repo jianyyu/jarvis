@@ -1,16 +1,24 @@
-// Package tui implements the interactive terminal dashboard for Jarvis.
+// Package tui implements the interactive terminal UI for Jarvis.
 //
-// The dashboard is built with Bubble Tea (bubbletea) and displays a
-// navigable tree of sessions and folders.  Users can create, rename,
-// delete, and attach to sessions without leaving the TUI.
+// The primary entry point is NewMultiplexer() (multiplexer.go), which
+// provides a sidebar + terminal pane layout with embedded VT emulator.
+//
+// Deprecated: Dashboard is the legacy full-screen TUI model.  New code
+// should use Multiplexer.  Dashboard is retained for the 'jarvis attach'
+// CLI fallback path only.
 //
 // File layout:
-//   - dashboard.go  — model definition, Init, Update, key handling
-//   - view.go       — View() and rendering helpers
-//   - commands.go   — async business-logic commands (spawn, delete, …)
-//   - builder.go    — builds the flat item list from disk
-//   - item.go       — ListItem data structure
-//   - styles.go     — Lipgloss colour/style definitions
+//   - multiplexer.go — root Multiplexer model (sidebar + terminal pane)
+//   - sidebar.go     — Sidebar component (refactored from dashboard)
+//   - termpane.go    — TermPane with VT emulator + sidecar connection
+//   - statusbar.go   — bottom status bar
+//   - focus.go       — FocusManager for keyboard routing
+//   - dashboard.go   — legacy full-screen dashboard (deprecated)
+//   - view.go        — legacy View() and rendering helpers
+//   - commands.go    — async business-logic commands (spawn, delete, …)
+//   - builder.go     — builds the flat item list from disk
+//   - item.go        — ListItem data structure
+//   - styles.go      — Lipgloss colour/style definitions
 package tui
 
 import (
