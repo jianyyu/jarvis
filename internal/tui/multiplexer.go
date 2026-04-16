@@ -116,7 +116,10 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			bodyHeight = 1
 		}
 		m.termPane.Resize(m.width, bodyHeight)
-		return m, redrawTick()
+		// NOTE: do NOT start a new redrawTick here — the self-sustaining
+		// tick from Init() is enough. Starting more ticks accumulates them
+		// across attach/detach cycles, flooding the message queue.
+		return m, nil
 
 	case termPaneRedrawMsg:
 		// Only re-render if there's pending data. Otherwise just reschedule
@@ -320,9 +323,11 @@ func (m Multiplexer) handleTermPaneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if raw != "" {
 		m.termPane.SendInput(raw)
 	}
-	return m, tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-		return termPaneRedrawMsg{}
-	})
+	// Don't start a new tick here — the self-sustaining redrawTick from
+	// Init() handles rendering. Creating a new tick per keystroke would
+	// accumulate tick chains forever, flooding the message queue and
+	// slowing the entire TUI.
+	return m, nil
 }
 
 // ── Session attachment ─────────────────────────────────────────────────
