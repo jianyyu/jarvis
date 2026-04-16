@@ -110,6 +110,12 @@ func (m Multiplexer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.SetFocused(false)
 		m.previewSessionID = msg.sessionID
 		m.updateStatusBar()
+		// Hide sidebar, give full width to term pane for clean copy-paste.
+		bodyHeight := m.height - 1
+		if bodyHeight < 1 {
+			bodyHeight = 1
+		}
+		m.termPane.Resize(m.width, bodyHeight)
 		return m, redrawTick()
 
 	case termPaneRedrawMsg:
@@ -166,14 +172,19 @@ func (m Multiplexer) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd
 		bodyHeight = 1
 	}
 
-	termWidth := m.width - m.sidebarWidth - 1 // 1 for border column
-	if termWidth < 1 {
-		termWidth = 1
-	}
-
 	m.sidebar.SetSize(m.sidebarWidth, bodyHeight)
-	m.termPane.Resize(termWidth, bodyHeight)
 	m.statusBar.SetWidth(m.width)
+
+	// When term pane is focused, it gets the full width (sidebar hidden).
+	if m.focus.Current() == FocusTermPane {
+		m.termPane.Resize(m.width, bodyHeight)
+	} else {
+		termWidth := m.width - m.sidebarWidth - 1 // 1 for border column
+		if termWidth < 1 {
+			termWidth = 1
+		}
+		m.termPane.Resize(termWidth, bodyHeight)
+	}
 
 	return m, nil
 }
@@ -208,18 +219,29 @@ func (m Multiplexer) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Multiplexer) handleToggleFocus() (tea.Model, tea.Cmd) {
+	bodyHeight := m.height - 1
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
 	switch m.focus.Current() {
 	case FocusTermPane:
 		// Detach from session but keep connection alive for quick re-attach.
 		m.termPane.Detach()
-		// Keep activeSession=true so re-attach doesn't need a full reconnect.
+		// Show sidebar again, resize term pane to share width.
 		m.focus.SetFocus(FocusSidebar)
 		m.sidebar.SetFocused(true)
+		termWidth := m.width - m.sidebarWidth - 1
+		if termWidth < 1 {
+			termWidth = 1
+		}
+		m.termPane.Resize(termWidth, bodyHeight)
 		return m, nil
 
 	case FocusSidebar:
 		if m.termPane.IsConnected() && m.termPane.SessionID() != "" {
-			// Re-attach to the existing connection (fast, no reconnect).
+			// Hide sidebar, give full width to term pane.
+			m.termPane.Resize(m.width, bodyHeight)
 			return m, m.reattachToSession()
 		}
 		return m, nil
@@ -408,19 +430,23 @@ func (m Multiplexer) View() string {
 		bodyHeight = 1
 	}
 
+	termView := m.termPane.View()
+
+	// When term pane is focused, hide sidebar for full-width display
+	// (allows clean text selection / copy-paste).
+	if !sidebarFocused {
+		return lipgloss.JoinVertical(lipgloss.Left, termView, m.statusBar.View())
+	}
+
 	sidebarView := m.sidebar.View()
 
 	// Border column between sidebar and term pane.
-	borderColor := "240"
-	if sidebarFocused { borderColor = "99" }
-	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(borderColor))
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("99"))
 	var borderLines []string
 	for i := 0; i < bodyHeight; i++ {
 		borderLines = append(borderLines, borderStyle.Render("\u2502"))
 	}
 	border := strings.Join(borderLines, "\n")
-
-	termView := m.termPane.View()
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, border, termView)
 	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusBar.View())
