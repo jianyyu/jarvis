@@ -168,8 +168,8 @@ func (tp *TermPane) WriteOutput(data []byte) {
 func (tp *TermPane) View() string {
 	if !tp.mu.TryLock() {
 		// Lock is held — skip this frame to avoid blocking Bubble Tea.
-		log.Printf("termPane.View: LOCK CONTENTION — skipping frame")
-		return padToHeight("  Loading...", tp.rows)
+		// This is normal and harmless; the next frame will render.
+		return padToHeight("", tp.rows)
 	}
 	connected := tp.connected
 	rows := tp.rows
