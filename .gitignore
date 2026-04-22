@@ -9,3 +9,6 @@ mock_claude
 dist/
 build/
 bin/
+.superpowers/
+.claude/
+.worktrees/
