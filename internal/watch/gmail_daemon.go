@@ -11,7 +11,7 @@ import (
 )
 
 // GmailDaemon polls Gmail by running Claude in non-interactive mode.
-// Each poll cycle: `claude -p "/gmail-monitor"` → exits when done.
+// Each poll cycle: `claude -p "/gmail-monitor all"` → exits when done.
 // No session, no PTY, no context accumulation.
 type GmailDaemon struct {
 	cfg     *config.Config
@@ -60,14 +60,14 @@ func (d *GmailDaemon) pollOnce(ctx context.Context) {
 	d.polling = true
 	defer func() { d.polling = false }()
 
-	log.Printf("gmail-watch: running /gmail-monitor")
+	log.Printf("gmail-watch: running /gmail-monitor all")
 
 	cwd := d.cfg.RepoPath()
 	if cwd == "" {
 		cwd = "."
 	}
 
-	cmd := exec.CommandContext(ctx, "claude", "-p", "/gmail-monitor")
+	cmd := exec.CommandContext(ctx, "claude", "-p", "/gmail-monitor all")
 	cmd.Dir = cwd
 	output, err := cmd.CombinedOutput()
 
