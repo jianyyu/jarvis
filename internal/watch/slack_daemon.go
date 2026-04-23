@@ -140,6 +140,11 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 			log.Printf("watch: registry save error: %v", err)
 		}
 
+		// Wait for Claude Code to finish startup before injecting the prompt.
+		if !waitForSessionReady(sess.ID, 90*time.Second) {
+			log.Printf("watch: session %s not ready, sending prompt anyway", sess.ID)
+		}
+
 		// Inject the prompt via PTY stdin, then submit with \r separately.
 		sendInputToSession(sess.ID, ev.InitialPrompt())
 		time.Sleep(500 * time.Millisecond)

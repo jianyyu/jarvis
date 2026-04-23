@@ -222,6 +222,11 @@ func (d *GitHubDaemon) processEvent(ev GitHubEvent, repoDir string) {
 		log.Printf("github-watch: registry save error: %v", err)
 	}
 
+	// Wait for Claude Code to finish startup before injecting the prompt.
+	if !waitForSessionReady(sess.ID, 90*time.Second) {
+		log.Printf("github-watch: session %s not ready, sending prompt anyway", sess.ID)
+	}
+
 	// Inject prompt via PTY
 	sendInputToSession(sess.ID, ev.InitialPrompt())
 	time.Sleep(500 * time.Millisecond)
@@ -245,6 +250,10 @@ func (d *GitHubDaemon) sendFollowUp(sess *model.Session, ev GitHubEvent) {
 		if !waitForSidecar(sess.ID, 10*time.Second) {
 			log.Printf("github-watch: sidecar not ready after 10s for %s, will retry next poll", sess.ID)
 			return
+		}
+		// After resume, wait for Claude Code to finish initializing.
+		if !waitForSessionReady(sess.ID, 90*time.Second) {
+			log.Printf("github-watch: session %s not ready after resume, sending prompt anyway", sess.ID)
 		}
 	}
 
