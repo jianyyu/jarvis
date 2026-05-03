@@ -2,11 +2,12 @@ package protocol
 
 // Request is sent from jarvis CLI to sidecar.
 type Request struct {
-	Action string `json:"action"`           // ping, get_status, attach, detach, send_input, resize, get_buffer
-	Text   string `json:"text,omitempty"`   // for send_input
-	Cols   int    `json:"cols,omitempty"`   // for resize
-	Rows   int    `json:"rows,omitempty"`   // for resize
-	Lines  int    `json:"lines,omitempty"` // for get_buffer
+	Action    string `json:"action"`               // ping, get_status, attach, detach, send_input, resize, get_buffer, set_session_id
+	Text      string `json:"text,omitempty"`       // for send_input
+	Cols      int    `json:"cols,omitempty"`       // for resize
+	Rows      int    `json:"rows,omitempty"`       // for resize
+	Lines     int    `json:"lines,omitempty"`      // for get_buffer
+	SessionID string `json:"session_id,omitempty"` // for set_session_id (Claude session UUID pushed by SessionStart hook)
 }
 
 // Response is sent from sidecar to jarvis CLI.

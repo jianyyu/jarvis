@@ -15,7 +15,6 @@ import (
 
 	"jarvis/internal/config"
 	"jarvis/internal/model"
-	"jarvis/internal/paths"
 	"jarvis/internal/protocol"
 	"jarvis/internal/store"
 
@@ -27,7 +26,7 @@ type DaemonConfig struct {
 	SessionID       string
 	CWD             string
 	ClaudeCmd       string
-	ClaudeSessionID string // If non-empty, skip JSONL detection (already known from resume)
+	ClaudeSessionID string // Last known Claude session UUID, if any. Authoritative updates arrive via the SessionStart hook (set_session_id action).
 	Env             []string
 	Cols            uint16
 	Rows            uint16
@@ -93,13 +92,6 @@ func (d *Daemon) Run() error {
 	// Clean up stale socket
 	os.Remove(d.socketPath)
 
-	// Snapshot existing JSONL files BEFORE starting Claude to avoid race
-	// where Claude creates the file before the detection goroutine runs.
-	var preSnapshot map[string]bool
-	if d.cfg.ClaudeSessionID == "" {
-		preSnapshot = d.snapshotProjectFiles()
-	}
-
 	// Start Claude process with PTY
 	master, cmd, err := StartProcessWithPTY(d.cfg.ClaudeCmd, d.cfg.CWD, d.cfg.Env, d.cfg.Cols, d.cfg.Rows)
 	if err != nil {
@@ -111,13 +103,14 @@ func (d *Daemon) Run() error {
 
 	log.Printf("sidecar: started process PID %d for session %s", cmd.Process.Pid, d.cfg.SessionID)
 
-	// Detect Claude session ID by watching for new JSONL files.
-	// Skip if we already know the session ID (e.g. from --resume).
+	// Claude session ID is delivered by the SessionStart hook, which calls
+	// `jarvis hook-relay SessionStart` and routes a set_session_id request
+	// to acceptConnections below. If we already have an ID (e.g. from a
+	// fresh --resume), the hook will simply reconfirm it.
 	if d.cfg.ClaudeSessionID != "" {
 		log.Printf("sidecar: Claude session ID already known: %s", d.cfg.ClaudeSessionID)
-	} else {
-		go d.detectClaudeSessionID(preSnapshot)
 	}
+	go d.watchSessionIDHook()
 
 	// Start socket listener
 	listener, err := net.Listen("unix", d.socketPath)
@@ -398,71 +391,58 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 			encoded := base64.StdEncoding.EncodeToString(allBytes)
 			codec.Send(protocol.Response{Event: "buffer", Data: encoded})
-		}
-	}
-}
 
-// projectDirsForCWD returns candidate Claude project directories for the daemon's CWD.
-// Delegates to the shared paths package.
-func (d *Daemon) projectDirsForCWD() []string {
-	return paths.ProjectDirs(d.cfg.CWD)
-}
-
-// snapshotProjectFiles returns a set of all current JSONL-related entries in the project dirs.
-// Must be called BEFORE starting Claude to avoid missing the new JSONL file.
-func (d *Daemon) snapshotProjectFiles() map[string]bool {
-	existing := make(map[string]bool)
-	for _, dir := range d.projectDirsForCWD() {
-		if entries, err := os.ReadDir(dir); err == nil {
-			for _, e := range entries {
-				existing[dir+"/"+e.Name()] = true
-			}
-		}
-	}
-	return existing
-}
-
-// detectClaudeSessionID watches for new JSONL files to capture the Claude session ID.
-// The existingFiles snapshot must be taken BEFORE starting Claude to avoid a race.
-func (d *Daemon) detectClaudeSessionID(existingFiles map[string]bool) {
-	dirs := d.projectDirsForCWD()
-
-	// Poll for new JSONL file (check every 2s for up to 120s).
-	// Claude Code creates the JSONL only after the first user interaction,
-	// so we need a generous timeout.
-	for i := 0; i < 60; i++ {
-		time.Sleep(2 * time.Second)
-
-		state := d.state.Load().(model.SidecarState)
-		if state == model.StateExited {
-			return
-		}
-
-		for _, dir := range dirs {
-			entries, err := os.ReadDir(dir)
-			if err != nil {
+		case "set_session_id":
+			if req.SessionID == "" {
+				codec.Send(protocol.Response{Event: "error", Detail: "missing session_id"})
 				continue
 			}
-
-			for _, e := range entries {
-				name := e.Name()
-				key := dir + "/" + name
-				if !existingFiles[key] && filepath.Ext(name) == ".jsonl" {
-					sessionID := name[:len(name)-len(".jsonl")]
-					log.Printf("sidecar: detected Claude session ID: %s", sessionID)
-
-					// Store it in session.yaml
-					if s, err := store.GetSession(d.cfg.SessionID); err == nil {
-						s.ClaudeSessionID = sessionID
-						s.UpdatedAt = time.Now()
-						store.SaveSession(s)
+			if s, err := store.GetSession(d.cfg.SessionID); err == nil {
+				if s.ClaudeSessionID != req.SessionID {
+					log.Printf("sidecar: set Claude session ID via hook: %s (was %q)", req.SessionID, s.ClaudeSessionID)
+					s.ClaudeSessionID = req.SessionID
+					s.UpdatedAt = time.Now()
+					if err := store.SaveSession(s); err != nil {
+						log.Printf("sidecar: failed to persist Claude session ID: %v", err)
 					}
-					return
 				}
+				d.cfg.ClaudeSessionID = req.SessionID
+			} else {
+				log.Printf("sidecar: set_session_id: failed to load session %s: %v", d.cfg.SessionID, err)
+			}
+			codec.Send(protocol.Response{Event: "ok"})
+		}
+	}
+}
+
+// watchSessionIDHook logs a single warning if Claude's SessionStart hook
+// has not pushed a session id within 60s — preserves a regression signal
+// without re-introducing the polling logic.
+func (d *Daemon) watchSessionIDHook() {
+	const timeout = 60 * time.Second
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline.C:
+			s, err := store.GetSession(d.cfg.SessionID)
+			if err == nil && s.ClaudeSessionID == "" {
+				log.Printf("sidecar: warning — no SessionStart hook received within %s for session %s; check Claude --settings wiring", timeout, d.cfg.SessionID)
+			}
+			return
+		case <-ticker.C:
+			if d.state.Load().(model.SidecarState) == model.StateExited {
+				return
+			}
+			if s, err := store.GetSession(d.cfg.SessionID); err == nil && s.ClaudeSessionID != "" {
+				return
 			}
 		}
 	}
-	log.Printf("sidecar: could not detect Claude session ID within 120s")
 }
 
 func (d *Daemon) idleDetectionLoop() {

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -87,6 +88,15 @@ func (m *Manager) spawnSidecar(sess *model.Session, claudeCmd string) error {
 		return err
 	}
 
+	// Wire up Claude Code's SessionStart hook so it pushes the canonical
+	// Claude session UUID back to our sidecar, replacing the racy snapshot+poll
+	// detection. See docs/session-id-detection-via-hook.md.
+	settingsPath, err := writeClaudeSettings(sess.ID)
+	if err != nil {
+		return fmt.Errorf("write claude settings: %w", err)
+	}
+	claudeCmd = injectClaudeSettings(claudeCmd, settingsPath)
+
 	cols, rows := 80, 24
 	// Try to get actual terminal size
 	if fd := int(os.Stdout.Fd()); fd >= 0 {
@@ -103,7 +113,8 @@ func (m *Manager) spawnSidecar(sess *model.Session, claudeCmd string) error {
 		"--cols", fmt.Sprintf("%d", cols),
 		"--rows", fmt.Sprintf("%d", rows),
 	}
-	// Pass known Claude session ID so the sidecar can skip JSONL detection
+	// Pass known Claude session ID so the sidecar can log it on startup; the
+	// authoritative id still arrives via the SessionStart hook handler.
 	if sess.ClaudeSessionID != "" {
 		args = append(args, "--claude-session-id", sess.ClaudeSessionID)
 	}
@@ -289,4 +300,75 @@ func FindSessionByName(name string) (*model.Session, error) {
 
 func getTerminalSize(fd int) (int, int, error) {
 	return term.GetSize(fd)
+}
+
+// writeClaudeSettings emits a per-session settings JSON file that registers a
+// SessionStart hook pointing back at `jarvis hook-relay SessionStart`. Returns
+// the absolute path to the file, suitable for passing to `claude --settings`.
+//
+// Resolved from os.Executable() so dev builds and prod installs both work.
+// On any failure to locate the jarvis binary, returns an error and leaves the
+// file unwritten — the caller will surface the error and abort spawn.
+func writeClaudeSettings(sessionID string) (string, error) {
+	jarvisBin, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve jarvis executable: %w", err)
+	}
+	if abs, err := filepath.EvalSymlinks(jarvisBin); err == nil {
+		jarvisBin = abs
+	}
+
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []map[string]any{
+				{
+					"matcher": "",
+					"hooks": []map[string]any{
+						{
+							"type":    "command",
+							"command": shellQuote(jarvisBin) + " hook-relay SessionStart",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal settings: %w", err)
+	}
+
+	dir := filepath.Join(store.JarvisHome(), "sessions", sessionID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, "claude-settings.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// injectClaudeSettings inserts `--settings <path>` immediately after the
+// `claude` executable in a command line such as
+//
+//	claude --resume <id> --append-system-prompt '...'
+//
+// The settings path is single-quoted so splitCommand in pty.go preserves it
+// as one argument (matches how --append-system-prompt is already escaped).
+func injectClaudeSettings(claudeCmd, settingsPath string) string {
+	quoted := "'" + settingsPath + "'"
+	parts := strings.SplitN(claudeCmd, " ", 2)
+	if len(parts) == 1 {
+		return parts[0] + " --settings " + quoted
+	}
+	return parts[0] + " --settings " + quoted + " " + parts[1]
+}
+
+// shellQuote wraps a path in single quotes for embedding inside a hook
+// command string (which Claude Code executes via its own shell). Single
+// quotes inside the path are escaped using the standard '"'"' trick.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
