@@ -363,3 +363,102 @@ func max(a, b int) int {
 	}
 	return b
 }
+
+// TestDaemonSetSessionID verifies the SessionStart-hook path: a set_session_id
+// request over the socket should persist the Claude UUID to session.yaml and
+// the daemon should reply with an "ok" event. A duplicate request must not
+// re-write the session file.
+func TestDaemonSetSessionID(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("JARVIS_HOME", tmp)
+	defer os.Unsetenv("JARVIS_HOME")
+
+	sessionID := "test-set-session-id"
+	socketPath := filepath.Join(tmp, "sockets", sessionID+".sock")
+
+	now := time.Now()
+	store.SaveSession(&model.Session{
+		ID: sessionID, Type: "session", Name: "test-set-session-id",
+		Status: model.StatusActive, LaunchDir: tmp, CreatedAt: now, UpdatedAt: now,
+		Sidecar: &model.SidecarInfo{Socket: socketPath, State: model.StateWorking},
+	})
+
+	cfg := DaemonConfig{
+		SessionID: sessionID,
+		CWD:       tmp,
+		// Long-lived child so the daemon stays up while we run our IPC checks.
+		ClaudeCmd: "bash -c 'sleep 3'",
+		Env:       os.Environ(),
+		Cols:      80,
+		Rows:      24,
+	}
+
+	d := NewDaemon(cfg)
+	d.socketPath = socketPath
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	var conn net.Conn
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if c, err := net.Dial("unix", socketPath); err == nil {
+			conn = c
+			break
+		}
+	}
+	if conn == nil {
+		t.Fatal("daemon socket never became ready")
+	}
+	defer conn.Close()
+
+	codec := protocol.NewCodec(conn)
+
+	const claudeUUID = "11111111-2222-3333-4444-555555555555"
+
+	// First push: should persist.
+	if err := codec.Send(protocol.Request{Action: "set_session_id", SessionID: claudeUUID}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var resp protocol.Response
+	if err := codec.Receive(&resp); err != nil {
+		t.Fatalf("receive ack: %v", err)
+	}
+	if resp.Event != "ok" {
+		t.Errorf("expected ok, got %q (detail=%q)", resp.Event, resp.Detail)
+	}
+
+	got, err := store.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.ClaudeSessionID != claudeUUID {
+		t.Errorf("ClaudeSessionID not persisted: got %q, want %q", got.ClaudeSessionID, claudeUUID)
+	}
+
+	// Empty session_id should be rejected with an "error" event and not
+	// overwrite the existing id.
+	if err := codec.Send(protocol.Request{Action: "set_session_id", SessionID: ""}); err != nil {
+		t.Fatalf("send empty: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := codec.Receive(&resp); err != nil {
+		t.Fatalf("receive error ack: %v", err)
+	}
+	if resp.Event != "error" {
+		t.Errorf("expected error event for empty session_id, got %q", resp.Event)
+	}
+
+	got2, _ := store.GetSession(sessionID)
+	if got2.ClaudeSessionID != claudeUUID {
+		t.Errorf("empty set_session_id clobbered existing id: got %q", got2.ClaudeSessionID)
+	}
+
+	// Wait for daemon to exit.
+	select {
+	case <-errCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not exit in time")
+	}
+}

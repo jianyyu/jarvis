@@ -392,7 +392,7 @@ func init() {
 }
 
 func main() {
-	rootCmd.AddCommand(newCmd, chatCmd, attachCmd, lsCmd, statusCmd, doneCmd, rmCmd, renameCmd, initCmd)
+	rootCmd.AddCommand(newCmd, chatCmd, attachCmd, lsCmd, statusCmd, doneCmd, rmCmd, renameCmd, initCmd, hookRelayCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
