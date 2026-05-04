@@ -462,3 +462,109 @@ func TestDaemonSetSessionID(t *testing.T) {
 		t.Fatal("daemon did not exit in time")
 	}
 }
+
+// TestDaemonAttachStuckClientDoesNotDeadlock simulates the real-world failure
+// mode where a user closes their terminal (or a tmux pane stalls) without
+// detaching: the attached socket is still ESTAB but nobody is reading. The
+// daemon must (a) not wedge readPTY by holding attachMu across a blocking
+// write, and (b) let a fresh attach client take over within a bounded time.
+//
+// Pre-fix, this test hangs forever — readPTY blocks inside Send, attachMu is
+// never released, and the new attach's "attach" handler deadlocks on Lock().
+func TestDaemonAttachStuckClientDoesNotDeadlock(t *testing.T) {
+	tmp := t.TempDir()
+	os.Setenv("JARVIS_HOME", tmp)
+	defer os.Unsetenv("JARVIS_HOME")
+
+	sessionID := "test-stuck-client"
+	socketPath := filepath.Join(tmp, "sockets", sessionID+".sock")
+
+	now := time.Now()
+	store.SaveSession(&model.Session{
+		ID: sessionID, Type: "session", Name: "test-stuck-client",
+		Status: model.StatusActive, LaunchDir: tmp, CreatedAt: now, UpdatedAt: now,
+		Sidecar: &model.SidecarInfo{Socket: socketPath, State: model.StateWorking},
+	})
+
+	// Mock claude that sprays a lot of output, enough to overflow the kernel
+	// socket buffer for a non-reading client. yes(1) prints "y\n" forever; we
+	// cap it so the test exits if everything goes right.
+	cfg := DaemonConfig{
+		SessionID: sessionID,
+		CWD:       tmp,
+		ClaudeCmd: "bash -c 'yes spam-data | head -c 4000000; sleep 5'",
+		Env:       os.Environ(),
+		Cols:      80,
+		Rows:      24,
+	}
+
+	d := NewDaemon(cfg)
+	d.socketPath = socketPath
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run() }()
+
+	// Wait for socket.
+	var stuckConn net.Conn
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if c, err := net.Dial("unix", socketPath); err == nil {
+			stuckConn = c
+			break
+		}
+	}
+	if stuckConn == nil {
+		t.Fatal("daemon socket never became ready")
+	}
+
+	// Attach the stuck client and then never read from it. The kernel will
+	// happily buffer some bytes, and after that further writes from readPTY
+	// will block — pre-fix this also blocks attachMu.
+	stuckCodec := protocol.NewCodec(stuckConn)
+	if err := stuckCodec.Send(protocol.Request{Action: "attach"}); err != nil {
+		t.Fatalf("send attach (stuck): %v", err)
+	}
+	// Give the daemon time to fill its outbound buffer with PTY spam.
+	time.Sleep(500 * time.Millisecond)
+
+	// Now a fresh client tries to take over. With the fix this completes
+	// promptly; pre-fix it deadlocks indefinitely on attachMu.
+	freshConn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial fresh: %v", err)
+	}
+	defer freshConn.Close()
+	freshCodec := protocol.NewCodec(freshConn)
+
+	// Use "attach" — that's the path that actually exercises attachMu. A plain
+	// ping would succeed even pre-fix because handleConnection's ping branch
+	// never touches the mutex.
+	done := make(chan error, 1)
+	go func() {
+		if err := freshCodec.Send(protocol.Request{Action: "attach"}); err != nil {
+			done <- err
+			return
+		}
+		var resp protocol.Response
+		freshConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		done <- freshCodec.Receive(&resp)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("fresh client attach/receive failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fresh client deadlocked — sidecar likely held attachMu across a stuck Send")
+	}
+
+	// Cleanup: drop the stuck client (close socket) so the test's daemon can
+	// finish, then wait for it to exit.
+	stuckConn.Close()
+	select {
+	case <-errCh:
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not exit in time")
+	}
+}
