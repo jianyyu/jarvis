@@ -21,6 +21,13 @@ import (
 	"github.com/creack/pty"
 )
 
+// attachedWriteTimeout bounds how long the daemon will block writing to an
+// attached client before declaring it dead. Without this bound, a stuck client
+// (terminal closed without detach, paused tmux pane, ssh half-disconnect) would
+// fill the socket buffer and block readPTY/shutdown indefinitely while holding
+// attachMu, freezing all subsequent attach attempts.
+const attachedWriteTimeout = 2 * time.Second
+
 // DaemonConfig holds the configuration for a sidecar daemon.
 type DaemonConfig struct {
 	SessionID       string
@@ -158,15 +165,11 @@ func (d *Daemon) Run() error {
 		store.SaveSession(s)
 	}
 
-	// Notify attached client
-	d.attachMu.Lock()
-	if d.attachedCodec != nil {
-		d.attachedCodec.Send(protocol.Response{
-			Event:    "session_ended",
-			ExitCode: exitCode,
-		})
-	}
-	d.attachMu.Unlock()
+	// Notify attached client (bounded so a stuck client can't wedge shutdown).
+	d.sendToAttached(protocol.Response{
+		Event:    "session_ended",
+		ExitCode: exitCode,
+	})
 
 	// Persist final state
 	d.persistState()
@@ -268,21 +271,45 @@ func (d *Daemon) readPTY() {
 			}
 		}
 
-		// Forward to attached client
-		d.attachMu.Lock()
-		if d.attachedCodec != nil {
-			encoded := base64.StdEncoding.EncodeToString(data)
-			if err := d.attachedCodec.Send(protocol.Response{
-				Event: "output",
-				Data:  encoded,
-			}); err != nil {
-				// Client disconnected
-				d.attachedConn = nil
-				d.attachedCodec = nil
-			}
-		}
-		d.attachMu.Unlock()
+		// Forward to attached client. sendToAttached releases attachMu before
+		// the network write so a slow/dead client cannot block readPTY (and
+		// thereby PTY draining + every other attach attempt).
+		d.sendToAttached(protocol.Response{
+			Event: "output",
+			Data:  base64.StdEncoding.EncodeToString(data),
+		})
 	}
+}
+
+// sendToAttached delivers resp to the currently attached client (if any) with
+// a bounded write deadline. The attachMu lock is NOT held across the network
+// write — a stuck client must not be able to wedge readPTY or the daemon
+// shutdown path. On write error or timeout, the client is detached and its
+// connection is closed so handleConnection unblocks and exits cleanly.
+func (d *Daemon) sendToAttached(resp protocol.Response) {
+	d.attachMu.Lock()
+	conn := d.attachedConn
+	codec := d.attachedCodec
+	d.attachMu.Unlock()
+	if codec == nil {
+		return
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(attachedWriteTimeout))
+	err := codec.Send(resp)
+	conn.SetWriteDeadline(time.Time{})
+	if err == nil {
+		return
+	}
+
+	log.Printf("sidecar: dropping attached client (write failed: %v)", err)
+	d.attachMu.Lock()
+	if d.attachedConn == conn {
+		d.attachedConn = nil
+		d.attachedCodec = nil
+	}
+	d.attachMu.Unlock()
+	conn.Close()
 }
 
 func (d *Daemon) acceptConnections() {
