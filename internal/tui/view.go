@@ -89,11 +89,6 @@ func (d Dashboard) View() string {
 
 // renderItem produces a single formatted line for one list item.
 func (d Dashboard) renderItem(item ListItem) string {
-	// ── Separator ──
-	if item.ID == "__separator__" {
-		return dimStyle.Render(strings.Repeat("─", 40))
-	}
-
 	// ── Folder row: arrow + name + progress ──
 	if item.IsFolder() {
 		arrow := "▶"

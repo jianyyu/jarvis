@@ -30,7 +30,7 @@ type ListItem struct {
 	Age      string
 
 	// Sorting
-	UpdatedAt time.Time
+	CreatedAt time.Time
 
 	// Folder-only fields
 	DoneCount  int
