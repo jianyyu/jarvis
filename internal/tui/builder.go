@@ -4,17 +4,18 @@ package tui
 //
 // The dashboard displays a tree of folders and sessions, but Bubble Tea
 // works with a flat list.  buildItemList() reads all sessions and folders
-// from disk, sorts them, and flattens the tree into a single []ListItem
-// with Depth fields indicating nesting.
+// from disk and flattens the tree into a single []ListItem with Depth
+// fields indicating nesting.
 //
 // Layout of the final list:
 //
-//   ┌─ Recent (top 5 most-recently-touched active sessions)
-//   ├─ ────────── separator
-//   ├─ Active folders and unfiled sessions (sorted by most recent activity)
+//   ├─ Active folders and unfiled sessions (sorted by CreatedAt, newest first)
 //   │   └─ children at Depth+1
 //   └─ "Done" virtual folder (collapsed by default)
-//       └─ done sessions and done folders at Depth+1
+//       └─ done sessions (regardless of original folder) and done folders at Depth+1
+//
+// Order is stable: it only changes when sessions/folders are created,
+// renamed, or deleted — not on activity-driven UpdatedAt bumps.
 
 import (
 	"sort"
@@ -43,29 +44,12 @@ func buildItemList(mgr *session.Manager) []ListItem {
 		sessionMap[s.ID] = s
 	}
 
-	// ── "Recent" section: top N most recently touched active sessions ──
-	const recentMax = 5
-	var recentItems []ListItem
-	for _, s := range sessions { // already sorted by UpdatedAt desc
-		if s.Status == model.StatusArchived || s.Status == model.StatusDone {
-			continue
-		}
-		// Skip sessions inside folders — they appear under their folder already.
-		if s.ParentID != "" {
-			continue
-		}
-		recentItems = append(recentItems, buildSessionItem(s, 0, mgr))
-		if len(recentItems) >= recentMax {
-			break
-		}
-	}
-
-	// ── Walk folders: separate active from done ──
+	// ── Walk top-level folders: separate active from done ──
 	var doneItems []ListItem
 	usedSessions := make(map[string]bool) // track sessions claimed by a folder
 
 	type itemGroup struct {
-		updatedAt time.Time
+		createdAt time.Time
 		items     []ListItem
 	}
 	var activeGroups []itemGroup
@@ -86,55 +70,35 @@ func buildItemList(mgr *session.Manager) []ListItem {
 		}
 
 		items := buildFolderItems(f, 0, sessionMap, folderMap, mgr, usedSessions)
-
-		// Sort the group by its most-recently-updated child.
-		var maxTime time.Time
-		for _, item := range items {
-			if item.UpdatedAt.After(maxTime) {
-				maxTime = item.UpdatedAt
-			}
-		}
-		if len(items) > 0 {
-			items[0].UpdatedAt = maxTime
-		}
-		activeGroups = append(activeGroups, itemGroup{updatedAt: maxTime, items: items})
+		activeGroups = append(activeGroups, itemGroup{createdAt: items[0].CreatedAt, items: items})
 	}
 
-	// ── Unfiled sessions (not inside any folder) ──
+	// ── Sessions: done ones go to Done section regardless of parent;
+	//    active unfiled ones become their own top-level group. ──
 	for _, s := range sessions {
 		if usedSessions[s.ID] || s.Status == model.StatusArchived {
 			continue
 		}
+		if s.Status == model.StatusDone {
+			doneItems = append(doneItems, buildSessionItem(s, 0, mgr))
+			usedSessions[s.ID] = true
+			continue
+		}
 		if s.ParentID == "" {
 			item := buildSessionItem(s, 0, mgr)
-			if s.Status == model.StatusDone {
-				doneItems = append(doneItems, item)
-			} else {
-				activeGroups = append(activeGroups, itemGroup{updatedAt: s.UpdatedAt, items: []ListItem{item}})
-			}
+			activeGroups = append(activeGroups, itemGroup{createdAt: s.CreatedAt, items: []ListItem{item}})
 			usedSessions[s.ID] = true
 		}
 	}
 
-	// ── Sort active groups by most recent interaction ──
+	// ── Sort active groups by CreatedAt (newest first) for stable order ──
 	sort.SliceStable(activeGroups, func(i, j int) bool {
-		return activeGroups[i].updatedAt.After(activeGroups[j].updatedAt)
+		return activeGroups[i].createdAt.After(activeGroups[j].createdAt)
 	})
 
 	// ── Assemble final flat list ──
 	var allItems []ListItem
 
-	// Recent section at the top.
-	if len(recentItems) > 0 {
-		allItems = append(allItems, recentItems...)
-		allItems = append(allItems, ListItem{
-			Type: ItemFolder,
-			ID:   "__separator__",
-			Name: "─",
-		})
-	}
-
-	// Active folders and sessions.
 	for _, g := range activeGroups {
 		allItems = append(allItems, g.items...)
 	}
@@ -144,6 +108,9 @@ func buildItemList(mgr *session.Manager) []ListItem {
 		folderItems := buildFolderItems(f, 1, sessionMap, folderMap, mgr, usedSessions)
 		doneItems = append(doneItems, folderItems...)
 	}
+
+	// Sort done items so the newest-completed appear first within Done.
+	sortItemsByCreatedAt(doneItems)
 
 	// Virtual "Done" folder at the bottom.
 	if len(doneItems) > 0 {
@@ -168,7 +135,9 @@ func buildItemList(mgr *session.Manager) []ListItem {
 	return allItems
 }
 
-// buildFolderItems flattens a folder and its children into ListItems.
+// buildFolderItems flattens a folder and its active children into ListItems.
+// Done sessions are intentionally skipped here — they're collected by
+// buildItemList into the top-level "Done" virtual folder.
 func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.Session, folderMap map[string]*model.Folder, mgr *session.Manager, used map[string]bool) []ListItem {
 	// Count done vs total children for the progress indicator.
 	doneCount := 0
@@ -189,13 +158,12 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 		ParentID:   f.ParentID,
 		Depth:      depth,
 		Expanded:   false, // actual expand state is applied by the dashboard
+		CreatedAt:  f.CreatedAt,
 		DoneCount:  doneCount,
 		TotalCount: totalCount,
 	}}
 
-	// Children: active first, then done.
 	var activeChildren []ListItem
-	var doneChildren []ListItem
 	for _, child := range f.Children {
 		switch child.Type {
 		case "session":
@@ -203,12 +171,11 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 			if !ok || s.Status == model.StatusArchived {
 				continue
 			}
-			item := buildSessionItem(s, depth+1, mgr)
 			if s.Status == model.StatusDone {
-				doneChildren = append(doneChildren, item)
-			} else {
-				activeChildren = append(activeChildren, item)
+				// Skip — buildItemList collects this into the global Done section.
+				continue
 			}
+			activeChildren = append(activeChildren, buildSessionItem(s, depth+1, mgr))
 			used[s.ID] = true
 
 		case "folder":
@@ -220,10 +187,8 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 		}
 	}
 
-	sortItemsByTime(activeChildren)
-	sortItemsByTime(doneChildren)
+	sortItemsByCreatedAt(activeChildren)
 	items = append(items, activeChildren...)
-	items = append(items, doneChildren...)
 
 	return items
 }
@@ -261,13 +226,13 @@ func buildSessionItem(s *model.Session, depth int, mgr *session.Manager) ListIte
 		State:     state,
 		Detail:    detail,
 		Age:       ui.FormatAge(s.UpdatedAt),
-		UpdatedAt: s.UpdatedAt,
+		CreatedAt: s.CreatedAt,
 	}
 }
 
-// sortItemsByTime sorts items with most-recently-updated first.
-func sortItemsByTime(items []ListItem) {
+// sortItemsByCreatedAt sorts items with most-recently-created first.
+func sortItemsByCreatedAt(items []ListItem) {
 	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		return items[i].CreatedAt.After(items[j].CreatedAt)
 	})
 }

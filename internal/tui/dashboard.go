@@ -275,26 +275,12 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if d.cursor > 0 {
 			d.cursor--
-			if d.cursor >= 0 && d.cursor < len(visible) && visible[d.cursor].ID == "__separator__" {
-				if d.cursor > 0 {
-					d.cursor--
-				} else {
-					d.cursor++
-				}
-			}
 			d.adjustScroll()
 		}
 
 	case "down", "j":
 		if d.cursor < len(visible)-1 {
 			d.cursor++
-			if d.cursor < len(visible) && visible[d.cursor].ID == "__separator__" {
-				if d.cursor < len(visible)-1 {
-					d.cursor++
-				} else {
-					d.cursor--
-				}
-			}
 			d.adjustScroll()
 		}
 
