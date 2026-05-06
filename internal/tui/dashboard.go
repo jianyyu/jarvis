@@ -316,6 +316,8 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		d.mode = ModeSearch
 		d.searchInput.Focus()
+		d.cursor = 0
+		d.scrollOffset = 0
 		return d, textinput.Blink
 
 	case "n":
@@ -422,6 +424,17 @@ func (d Dashboard) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	d.searchInput, cmd = d.searchInput.Update(msg)
 	d.searchQuery = d.searchInput.Value()
+
+	// The query just changed — clamp cursor/scroll to the new filtered list
+	// so results stay visible as the user types or backspaces.
+	visible := d.filteredItems()
+	if d.cursor >= len(visible) {
+		d.cursor = max(0, len(visible)-1)
+	}
+	if d.cursor < 0 {
+		d.cursor = 0
+	}
+	d.adjustScroll()
 	return d, cmd
 }
 
