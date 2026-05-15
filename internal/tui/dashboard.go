@@ -84,6 +84,12 @@ type Dashboard struct {
 	// Set when the user presses Enter on a session — signals the outer
 	// program to exit the TUI and call Manager.Attach().
 	attachSessionID string
+
+	// ID of the item the cursor was on when state was last saved. Used on
+	// the first refresh after startup to re-anchor the cursor by ID, since
+	// items may have reordered (e.g. after detaching from a session, that
+	// session's UpdatedAt bumps and it floats up).
+	pendingCursorID string
 }
 
 // NewDashboard creates a fresh dashboard, loading persisted view state
@@ -102,6 +108,7 @@ func NewDashboard(cfg *config.Config) Dashboard {
 	expandState := map[string]bool{"__done__": false}
 	cursor := 0
 	scrollOffset := 0
+	pendingCursorID := ""
 
 	// Restore viewport state from last session.
 	if saved := loadState(); saved != nil {
@@ -110,17 +117,19 @@ func NewDashboard(cfg *config.Config) Dashboard {
 		}
 		cursor = saved.Cursor
 		scrollOffset = saved.ScrollOffset
+		pendingCursorID = saved.CursorID
 	}
 
 	return Dashboard{
-		cfg:          cfg,
-		mgr:          session.NewManager(cfg),
-		expandState:  expandState,
-		cursor:       cursor,
-		scrollOffset: scrollOffset,
-		searchInput:  si,
-		cmdInput:     ci,
-		mode:         ModeDashboard,
+		cfg:             cfg,
+		mgr:             session.NewManager(cfg),
+		expandState:     expandState,
+		cursor:          cursor,
+		scrollOffset:    scrollOffset,
+		searchInput:     si,
+		cmdInput:        ci,
+		mode:            ModeDashboard,
+		pendingCursorID: pendingCursorID,
 	}
 }
 
@@ -136,6 +145,7 @@ func (d Dashboard) AttachSessionID() string {
 type dashboardState struct {
 	ExpandState  map[string]bool `yaml:"expand_state"`
 	Cursor       int             `yaml:"cursor"`
+	CursorID     string          `yaml:"cursor_id,omitempty"`
 	ScrollOffset int             `yaml:"scroll_offset"`
 }
 
@@ -145,9 +155,14 @@ func statePath() string {
 
 // SaveState writes the current viewport state to disk so it survives restarts.
 func (d Dashboard) SaveState() {
+	var cursorID string
+	if item := d.selectedItem(); item != nil {
+		cursorID = item.ID
+	}
 	state := dashboardState{
 		ExpandState:  d.expandState,
 		Cursor:       d.cursor,
+		CursorID:     cursorID,
 		ScrollOffset: d.scrollOffset,
 	}
 	data, err := yaml.Marshal(&state)
@@ -210,6 +225,14 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var selectedID string
 		if old := d.selectedItem(); old != nil {
 			selectedID = old.ID
+		}
+		// On the first refresh after startup d.items is empty, so fall back
+		// to the cursor ID persisted from the previous session — this keeps
+		// the cursor on the session you just detached from even after it
+		// floats to the top of the list.
+		if selectedID == "" && d.pendingCursorID != "" {
+			selectedID = d.pendingCursorID
+			d.pendingCursorID = ""
 		}
 
 		d.items = msg.items
