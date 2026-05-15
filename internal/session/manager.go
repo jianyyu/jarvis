@@ -174,6 +174,15 @@ func (m *Manager) Attach(sessionID string) error {
 		return fmt.Errorf("get session: %w", err)
 	}
 
+	// Re-attaching to a done session revives it — the user is picking the
+	// work back up, so it belongs in the active list again.
+	if sess.Status == model.StatusDone {
+		sess.Status = model.StatusActive
+		if err := store.SaveSession(sess); err != nil {
+			return fmt.Errorf("reactivate session: %w", err)
+		}
+	}
+
 	socketPath := sidecar.SocketPath(sess.ID)
 
 	// Check if sidecar is alive
