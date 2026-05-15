@@ -437,28 +437,17 @@ The solution: instead of reading stdin directly, the code creates an `os.Pipe()`
 
 `SocketPath()` uses `store.JarvisHome()` to compute the socket directory. This means the socket path depends on the `JARVIS_HOME` environment variable, which is set when the sidecar starts. If `JARVIS_HOME` changes between sidecar start and CLI usage, the CLI won't find the socket. In practice this only matters in tests (which set `JARVIS_HOME` per-test). The recent bugfix (commit `de173c2`) ensured consistent `JARVIS_HOME` usage.
 
-### The separator and `__done__` virtual items in the TUI
+### The `__done__` virtual folder in the TUI
 
-`internal/tui/builder.go:126-131, 145-162`
+The flat item list contains one virtual item that isn't a real session or folder:
 
-The flat item list contains two virtual items that aren't real sessions or folders:
-
-- `__separator__` (ID: `"__separator__"`): A horizontal line dividing the "Recent" section from the main list. The cursor-movement code in `dashboard.go:260-279` has special logic to **skip** this item -- pressing up/down jumps over it.
 - `__done__` (ID: `"__done__"`): A virtual folder at the bottom that contains all done sessions and done folders. It's collapsed by default. The delete and mark-done handlers have special guards to avoid operating on it (`item.ID != "__done__"`).
 
-If you add new virtual items, you need to update the cursor-skip logic and the action guards.
+If you add new virtual items, you need to update the action guards.
 
-### The "Recent" section being duplicates
+### Stable order
 
-`internal/tui/builder.go:47-57`
-
-The top of the dashboard shows the 5 most recently updated active sessions as a "Recent" section. These same sessions also appear in their normal position (under their folder or at the top level). They are **duplicated** in the flat list -- the same session ID appears twice. This means:
-
-- Pressing Enter on either copy attaches to the same session.
-- The cursor position and the item index don't uniquely identify a session.
-- If you delete the duplicate in the Recent section, it deletes the real session.
-
-This is intentional (quick access to recent sessions) but can confuse maintainers who assume IDs are unique in the list.
+The dashboard sorts active groups (folders + unfiled sessions) and folder children by `CreatedAt` (newest first), not `UpdatedAt`. Once a session/folder is created, its position is fixed; activity does not reorder the list. Done sessions are hoisted to the `__done__` virtual folder regardless of which folder they were created in, so an active folder's children list shrinks when a child is marked done. Search still iterates the full flat list, so done items remain searchable.
 
 ---
 

@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"jarvis/internal/config"
 	"jarvis/internal/model"
@@ -43,7 +42,6 @@ const (
 
 // ── Bubble Tea messages ─────────────────────────────────────────────────
 
-type tickMsg struct{}                      // periodic refresh timer
 type refreshMsg struct{ items []ListItem } // new item list from disk
 type statusMsgClear struct{}               // clear transient status text
 type attachMsg struct{ sessionID string }  // signal to exit TUI and attach
@@ -187,15 +185,10 @@ func loadState() *dashboardState {
 // ── Bubble Tea lifecycle ────────────────────────────────────────────────
 
 // Init is called once when the program starts.  It kicks off the first
-// data load and the periodic refresh timer.
+// data load.  The dashboard does not auto-refresh — users press ctrl+r to
+// re-read from disk, and user actions that change state refresh themselves.
 func (d Dashboard) Init() tea.Cmd {
-	return tea.Batch(d.refreshItems(), tickEvery())
-}
-
-func tickEvery() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-		return tickMsg{}
-	})
+	return d.refreshItems()
 }
 
 func (d Dashboard) refreshItems() tea.Cmd {
@@ -215,9 +208,6 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d.width = msg.Width
 		d.height = msg.Height
 		return d, nil
-
-	case tickMsg:
-		return d, tea.Batch(d.refreshItems(), tickEvery())
 
 	case refreshMsg:
 		// Remember the currently selected item so the cursor follows it
@@ -298,26 +288,12 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if d.cursor > 0 {
 			d.cursor--
-			if d.cursor >= 0 && d.cursor < len(visible) && visible[d.cursor].ID == "__separator__" {
-				if d.cursor > 0 {
-					d.cursor--
-				} else {
-					d.cursor++
-				}
-			}
 			d.adjustScroll()
 		}
 
 	case "down", "j":
 		if d.cursor < len(visible)-1 {
 			d.cursor++
-			if d.cursor < len(visible) && visible[d.cursor].ID == "__separator__" {
-				if d.cursor < len(visible)-1 {
-					d.cursor++
-				} else {
-					d.cursor--
-				}
-			}
 			d.adjustScroll()
 		}
 
