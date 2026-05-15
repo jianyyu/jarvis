@@ -77,7 +77,7 @@ type SlackWatcherConfig struct {
 
 type GmailWatcherConfig struct {
 	Enabled      bool   `yaml:"enabled"`
-	PollInterval int    `yaml:"poll_interval"` // seconds (default 600 = 10 min)
+	PollInterval int    `yaml:"poll_interval"` // seconds (default 3600 = 1 hour)
 	Folder       string `yaml:"folder"`        // folder name to place sessions in
 }
 

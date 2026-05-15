@@ -206,6 +206,14 @@ func (p *GitHubPoller) Poll(ctx context.Context, getCommentTS func(string) strin
 			continue
 		}
 
+		// For review_requested, only act if the user is individually requested
+		// (not just via team membership).
+		if n.Reason == "review_requested" && !pr.isUserRequested(p.username) {
+			log.Printf("github: skipping PR #%d — review requested via team, not individually", prNum)
+			p.markNotificationRead(n.ID)
+			continue
+		}
+
 		contextKey := fmt.Sprintf("github:%s#%d", fullName, prNum)
 		commentSince := getCommentTS(contextKey)
 		if commentSince == "" {
@@ -300,6 +308,18 @@ type ghPR struct {
 	Head struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
+	RequestedReviewers []struct {
+		Login string `json:"login"`
+	} `json:"requested_reviewers"`
+}
+
+func (pr *ghPR) isUserRequested(username string) bool {
+	for _, r := range pr.RequestedReviewers {
+		if strings.EqualFold(r.Login, username) {
+			return true
+		}
+	}
+	return false
 }
 
 type ghReviewComment struct {
