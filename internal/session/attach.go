@@ -45,9 +45,12 @@ func Attach(socketPath string) error {
 		return fmt.Errorf("make raw: %w", err)
 	}
 
-	// Clear screen so previous session output doesn't bleed into this one.
-	// \033[2J clears the visible screen, \033[H moves cursor to top-left.
-	os.Stdout.WriteString("\033[2J\033[H")
+	// Enter alternate screen buffer so the session runs on a separate canvas.
+	// \033[?1049h saves the cursor position + main buffer and switches to the
+	// alt buffer; the matching \033[?1049l on cleanup restores the cursor to
+	// exactly where the user was before they attached. \033[H homes the cursor
+	// inside the fresh alt buffer.
+	os.Stdout.WriteString("\033[?1049h\033[H")
 
 	// Ignore SIGQUIT — Ctrl-\ sends SIGQUIT which would kill us
 	signal.Ignore(syscall.SIGQUIT)
@@ -154,17 +157,21 @@ func Attach(socketPath string) error {
 	// 1. Restore terminal (so bubbletea gets a clean state)
 	term.Restore(fd, oldState)
 
-	// 2. Close pipe to unblock the stdin reader goroutine
+	// 2. Leave alt screen buffer — terminal restores cursor to its pre-attach
+	//    position automatically. Paired with \033[?1049h above.
+	os.Stdout.WriteString("\033[?1049l")
+
+	// 3. Close pipe to unblock the stdin reader goroutine
 	pipeW.Close()
 	pipeR.Close()
 
-	// 3. Wait for stdin goroutine to exit
+	// 4. Wait for stdin goroutine to exit
 	select {
 	case <-stdinDone:
 	case <-time.After(500 * time.Millisecond):
 	}
 
-	// 4. Stop signals, close connection
+	// 5. Stop signals, close connection
 	signal.Stop(sigWinch)
 	signal.Reset(syscall.SIGQUIT)
 	conn.Close()
