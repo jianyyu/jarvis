@@ -53,6 +53,7 @@ var syntheticUserPrefixes = []string{
 	"<command-name>",
 	"<command-message>",
 	"<user-prompt-submit-hook>",
+	"<task-notification>", // background-subagent completion notices
 	"[Request interrupted",
 	"Caveat:",
 	"This session is being continued",

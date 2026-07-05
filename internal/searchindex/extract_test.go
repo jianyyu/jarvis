@@ -39,6 +39,7 @@ func TestParseTranscript_SkipsSyntheticUser(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"<system-reminder>be nice</system-reminder>"}}`,
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"file contents"}]}}`,
 		`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"}}`,
+		`{"type":"user","message":{"role":"user","content":"<task-notification>Background task abc123 completed: report ready</task-notification>"}}`,
 		`{"type":"user","message":{"role":"user","content":"actually find the marketplace session"}}`,
 	}, "\n")
 
@@ -46,13 +47,15 @@ func TestParseTranscript_SkipsSyntheticUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	// The first *real* prompt must be the 4th record, not the synthetic ones.
+	// The first *real* prompt must be the last record, not the synthetic ones.
 	if ps.InitialPrompt != "actually find the marketplace session" {
 		t.Errorf("InitialPrompt = %q, want the real prompt", ps.InitialPrompt)
 	}
 	if strings.Contains(ps.UserText, "system-reminder") ||
 		strings.Contains(ps.UserText, "file contents") ||
-		strings.Contains(ps.UserText, "Request interrupted") {
+		strings.Contains(ps.UserText, "Request interrupted") ||
+		strings.Contains(ps.UserText, "task-notification") ||
+		strings.Contains(ps.UserText, "Background task") {
 		t.Errorf("UserText leaked synthetic content: %q", ps.UserText)
 	}
 }
