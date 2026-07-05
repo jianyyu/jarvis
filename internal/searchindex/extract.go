@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
-	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // ParsedSession is the denoised, searchable content extracted from one
@@ -38,7 +38,8 @@ const (
 	replyHeadRunes        = 500
 	replyTailRunes        = 200
 	toolNoiseMinLen       = 50
-	maxColumnRunes        = 200_000 // per-column safety cap
+	maxColumnRunes        = 200_000          // per-column safety cap
+	maxLineBytes          = 16 * 1024 * 1024 // lines beyond this are skipped as noise
 )
 
 // syntheticUserPrefixes mark `user`-role records that are not the human typing:
@@ -57,70 +58,81 @@ var syntheticUserPrefixes = []string{
 }
 
 // ParseTranscript streams a Claude Code JSONL transcript and returns its
-// denoised searchable buckets. Malformed lines are skipped.
+// denoised searchable buckets. Malformed and oversized lines are skipped.
 func ParseTranscript(r io.Reader) (ParsedSession, error) {
 	var ps ParsedSession
 	var users, assistants []string
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // transcript lines can be large
-
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, err := br.ReadBytes('\n')
+		// Oversized lines are skippable noise, same as malformed ones — one
+		// pathological line must not lose the whole session.
+		if len(line) > 0 && len(line) <= maxLineBytes {
+			parseLine(line, &ps, &users, &assistants)
 		}
-		var rec transcriptRecord
-		if err := json.Unmarshal(line, &rec); err != nil {
-			continue // skip malformed / partial line
+		if err == io.EOF {
+			break // final unterminated line (if any) was handled above
 		}
-
-		switch rec.Type {
-		case "ai-title":
-			if rec.AITitle != "" {
-				ps.AITitle = rec.AITitle
-			}
-		case "user":
-			text := realUserText(rec)
-			if text == "" {
-				continue
-			}
-			if ps.InitialPrompt == "" {
-				ps.InitialPrompt = truncateRunes(text, maxInitialPromptRunes)
-			}
-			users = append(users, text)
-		case "assistant":
-			for _, blk := range textBlocks(rec) {
-				if isToolNoise(blk) {
-					continue
-				}
-				assistants = append(assistants, truncateReply(blk))
-			}
+		if err != nil {
+			return ps, err
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return ps, err
-	}
 
-	ps.UserText = capRunes(strings.Join(users, "\n"), maxColumnRunes)
-	ps.AssistantText = capRunes(strings.Join(assistants, "\n"), maxColumnRunes)
+	ps.UserText = truncateRunes(strings.Join(users, "\n"), maxColumnRunes)
+	ps.AssistantText = truncateRunes(strings.Join(assistants, "\n"), maxColumnRunes)
 	return ps, nil
 }
 
+// parseLine dispatches a single JSONL line into the output buckets.
+// Malformed lines are ignored.
+func parseLine(line []byte, ps *ParsedSession, users, assistants *[]string) {
+	var rec transcriptRecord
+	if err := json.Unmarshal(line, &rec); err != nil {
+		return // skip malformed / partial line
+	}
+
+	switch rec.Type {
+	case "ai-title":
+		if rec.AITitle != "" {
+			ps.AITitle = rec.AITitle
+		}
+	case "user":
+		text := realUserText(rec)
+		if text == "" {
+			return
+		}
+		if ps.InitialPrompt == "" {
+			ps.InitialPrompt = truncateRunes(text, maxInitialPromptRunes)
+		}
+		*users = append(*users, text)
+	case "assistant":
+		if rec.Message == nil {
+			return
+		}
+		for _, blk := range textBlocks(rec.Message.Content) {
+			if isToolNoise(blk) {
+				continue
+			}
+			*assistants = append(*assistants, truncateReply(blk))
+		}
+	}
+}
+
 // realUserText returns the human-typed text of a user record, or "" if the
-// record is synthetic (array content = tool_result carrier, or a synthetic
-// prefix).
+// record is synthetic. String content is the prompt itself; array content is
+// either a multimodal prompt (image + text blocks — keep the text) or a
+// tool_result carrier (no text blocks — synthetic).
 func realUserText(rec transcriptRecord) string {
 	if rec.Message == nil {
 		return ""
 	}
-	// Real prompts have string content; tool_result carriers have array content.
 	var s string
 	if err := json.Unmarshal(rec.Message.Content, &s); err != nil {
-		return "" // array content → synthetic
+		s = strings.Join(textBlocks(rec.Message.Content), "\n")
 	}
 	s = strings.TrimSpace(s)
-	if len([]rune(s)) < 5 {
+	if utf8.RuneCountInString(s) < 5 {
 		return ""
 	}
 	if isSyntheticUserText(s) {
@@ -129,14 +141,11 @@ func realUserText(rec transcriptRecord) string {
 	return s
 }
 
-// textBlocks returns the text of every `type:"text"` block in an assistant
-// record (dropping thinking / tool_use / image).
-func textBlocks(rec transcriptRecord) []string {
-	if rec.Message == nil {
-		return nil
-	}
+// textBlocks returns the text of every `type:"text"` block in an array
+// content payload (dropping thinking / tool_use / tool_result / image).
+func textBlocks(content json.RawMessage) []string {
 	var blocks []contentBlock
-	if err := json.Unmarshal(rec.Message.Content, &blocks); err != nil {
+	if err := json.Unmarshal(content, &blocks); err != nil {
 		return nil
 	}
 	var out []string
@@ -148,27 +157,22 @@ func textBlocks(rec transcriptRecord) []string {
 	return out
 }
 
+// isSyntheticUserText expects already-trimmed input.
 func isSyntheticUserText(s string) bool {
-	t := strings.TrimSpace(s)
 	for _, p := range syntheticUserPrefixes {
-		if strings.HasPrefix(t, p) {
+		if strings.HasPrefix(s, p) {
 			return true
 		}
 	}
 	return false
 }
 
-var toolMarkerRe = regexp.MustCompile(`\[Tool:`)
-
 func isToolNoise(s string) bool {
 	t := strings.TrimSpace(s)
-	if len([]rune(t)) < toolNoiseMinLen {
+	if utf8.RuneCountInString(t) < toolNoiseMinLen {
 		return true
 	}
-	if toolMarkerRe.MatchString(t) {
-		return true
-	}
-	return false
+	return strings.Contains(t, "[Tool:")
 }
 
 func truncateReply(s string) string {
@@ -180,14 +184,6 @@ func truncateReply(s string) string {
 }
 
 func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
-}
-
-func capRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s

@@ -122,8 +122,9 @@ adapted from a proven Claude-transcript indexer):
 - **`firstPrompt`** — the first *real* human `user` message (post-synthetic-filter), truncated
   to ~200 chars → `initial_prompt` column.
 - **user bucket** — remaining real user messages → `user_text`.
-- **`detectToolNoise`** — skip assistant filler: very short (<50 chars) or pure narration like
-  `"Let me read…"`, `"I'll check…"`, `[Tool: …]`. These don't enter `assistant_text`.
+- **`detectToolNoise`** — skip assistant filler: very short (<50 runes) or containing a
+  `[Tool: …]` marker. These don't enter `assistant_text`. (Prefix-based narration filtering
+  was considered and rejected — long "Let me…" replies usually carry real content.)
 - **assistant truncation** — for a kept reply >800 chars, store `first 500 + "…" + last 200`
   (not the whole thing) so one long reply can't dominate the index.
 - **`<5` char** content is dropped outright.
