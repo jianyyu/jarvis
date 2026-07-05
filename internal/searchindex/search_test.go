@@ -69,6 +69,40 @@ func TestSearchChineseTrigram(t *testing.T) {
 	}
 }
 
+func TestSearchSnippetIsReadable(t *testing.T) {
+	t.Setenv("JARVIS_HOME", t.TempDir())
+	launch := t.TempDir()
+	// Long sentence with the matched term mid-sentence: the snippet window
+	// must be wide enough to give real context, not a ~14-char sliver.
+	seedSession(t, "sess-long", "long body", launch, "c-long",
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"When the shard resolver walks the registry it calls resolveHarborByShardForTenant deep inside the routing layer and only afterwards does it consult the fallback table for stale entries."}]}}`)
+
+	idx, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	if _, err := idx.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	res, err := idx.Search("HarborByShard")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res) == 0 || res[0].JarvisID != "sess-long" {
+		t.Fatalf("expected sess-long, got %+v", res)
+	}
+	snip := res[0].Snippet
+	content := strings.NewReplacer(MarkOpen, "", MarkClose, "", "…", "").Replace(snip)
+	if n := len([]rune(content)); n < 40 {
+		t.Errorf("snippet too narrow: %d runes of content in %q", n, snip)
+	}
+	if !strings.Contains(snip, MarkOpen) || !strings.Contains(snip, MarkClose) {
+		t.Errorf("snippet missing highlight markers: %q", snip)
+	}
+}
+
 func TestSearchEscapesSpecialChars(t *testing.T) {
 	idx := newSeededIndex(t)
 	// A query full of FTS5 syntax characters must not error.

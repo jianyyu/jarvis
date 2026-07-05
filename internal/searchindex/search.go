@@ -10,6 +10,9 @@ import (
 
 // Highlight markers wrapped around matched terms by snippet(). The TUI restyles
 // them; they are ASCII control chars that never appear in real text.
+// Note: markers may legitimately be ABSENT in edge cases (very long matched
+// spans exceeding the snippet window, some token-boundary quirks) — consumers
+// must not assume they exist in every Result.Snippet.
 const (
 	MarkOpen  = "\x02"
 	MarkClose = "\x03"
@@ -34,9 +37,11 @@ func (i *Index) Search(query string) ([]Result, error) {
 	}
 	match := escapeFTSQuery(q)
 
+	// 64 tokens: snippet counts tokens, and trigram tokens are 3-char windows,
+	// so 64 ≈ one line of context (FTS5 max).
 	rows, err := i.db.Query(
 		`SELECT f.jarvis_id, COALESCE(m.ai_title,''),
-		        snippet(sessions_fts, -1, ?, ?, '…', 12)
+		        snippet(sessions_fts, -1, ?, ?, '…', 64)
 		 FROM sessions_fts f
 		 JOIN index_meta m ON m.rowid_ref = f.rowid
 		 WHERE sessions_fts MATCH ?
