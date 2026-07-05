@@ -549,18 +549,18 @@ func DefaultPath() string {
 }
 
 // Open opens (creating if needed) the index database at path and ensures the
-// schema exists. Uses WAL so background Sync writes don't block Search reads.
+// schema exists. WAL journaling and a per-connection busy_timeout are applied
+// via the DSN so every pooled connection gets them at connect time — this lets
+// background Sync writes coexist with Search reads without instant SQLITE_BUSY
+// failures.
 func Open(path string) (*Index, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir index dir: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	dsn := path + "?_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("pragma: %w", err)
 	}
 	idx := &Index{db: db}
 	if err := idx.migrate(); err != nil {
