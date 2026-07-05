@@ -154,7 +154,7 @@ type Result struct {
 One query:
 ```sql
 SELECT jarvis_id, name,
-       snippet(sessions_fts, -1, '\x02', '\x03', '…', 12) AS snip
+       snippet(sessions_fts, -1, '\x02', '\x03', '…', 64) AS snip
 FROM sessions_fts
 WHERE sessions_fts MATCH ?
 ORDER BY bm25(sessions_fts, 0.0, 12.0, 8.0, 2.0, 1.0, 3.0)
