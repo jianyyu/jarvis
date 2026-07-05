@@ -38,7 +38,7 @@ func runDashboard() error {
 
 	for {
 		dashboard := tui.NewDashboard(cfg)
-		p := tea.NewProgram(dashboard, tea.WithAltScreen())
+		p := tea.NewProgram(dashboard, tea.WithAltScreen(), tea.WithMouseCellMotion())
 		m, err := p.Run()
 		if err != nil {
 			return err

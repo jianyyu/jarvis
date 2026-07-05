@@ -47,6 +47,11 @@ func (d Dashboard) View() string {
 	}
 
 	maxRows := d.viewportHeight()
+	if d.mode == ModeSearch && d.searchQuery != "" {
+		// Search results render as two lines each (row + snippet); halve the
+		// row budget so the footer/input never scrolls off screen.
+		maxRows /= 2
+	}
 	end := d.scrollOffset + maxRows
 	if end > len(visibleItems) {
 		end = len(visibleItems)
@@ -65,6 +70,9 @@ func (d Dashboard) View() string {
 			b.WriteString(selectedStyle.Render("▌") + " " + indent + line + "\n")
 		} else {
 			b.WriteString("  " + indent + line + "\n")
+		}
+		if d.mode == ModeSearch && item.IsSession() && item.Detail != "" {
+			b.WriteString("      " + dimStyle.Render("↳ ") + styleSnippet(item.Detail) + "\n")
 		}
 	}
 

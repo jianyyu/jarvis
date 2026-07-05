@@ -21,6 +21,7 @@ import (
 
 	"jarvis/internal/config"
 	"jarvis/internal/model"
+	"jarvis/internal/searchindex"
 	"jarvis/internal/session"
 	"jarvis/internal/store"
 
@@ -45,6 +46,7 @@ const (
 type refreshMsg struct{ items []ListItem } // new item list from disk
 type statusMsgClear struct{}               // clear transient status text
 type attachMsg struct{ sessionID string }  // signal to exit TUI and attach
+type indexSyncedMsg struct{}               // full-text index background sync completed
 
 // ── Dashboard model ─────────────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ type Dashboard struct {
 	height int // terminal height (updated on WindowSizeMsg)
 	cfg    *config.Config
 	mgr    *session.Manager
+	idx    *searchindex.Index // full-text search index (nil if unavailable)
 
 	// Folder expand state — persists across refreshes and restarts.
 	expandState map[string]bool // folder ID → expanded?
@@ -94,7 +97,7 @@ type Dashboard struct {
 // from disk and running session recovery.
 func NewDashboard(cfg *config.Config) Dashboard {
 	si := textinput.New()
-	si.Placeholder = "search..."
+	si.Placeholder = "search names + content..."
 	si.CharLimit = 100
 
 	ci := textinput.New()
@@ -102,6 +105,11 @@ func NewDashboard(cfg *config.Config) Dashboard {
 
 	// Mark dead sidecars as suspended before we display anything.
 	session.RecoverAllSessions()
+
+	idx, err := searchindex.Open(searchindex.DefaultPath())
+	if err != nil {
+		idx = nil
+	}
 
 	expandState := map[string]bool{"__done__": false}
 	cursor := 0
@@ -121,6 +129,7 @@ func NewDashboard(cfg *config.Config) Dashboard {
 	return Dashboard{
 		cfg:             cfg,
 		mgr:             session.NewManager(cfg),
+		idx:             idx,
 		expandState:     expandState,
 		cursor:          cursor,
 		scrollOffset:    scrollOffset,
@@ -188,12 +197,25 @@ func loadState() *dashboardState {
 // data load.  The dashboard does not auto-refresh — users press ctrl+r to
 // re-read from disk, and user actions that change state refresh themselves.
 func (d Dashboard) Init() tea.Cmd {
-	return d.refreshItems()
+	return tea.Batch(d.refreshItems(), d.syncIndex())
 }
 
 func (d Dashboard) refreshItems() tea.Cmd {
 	return func() tea.Msg {
 		return refreshMsg{items: buildItemList(d.mgr)}
+	}
+}
+
+// syncIndex brings the full-text search index up to date in the background.
+// A completed sync means later Search calls may return improved results;
+// filteredItems() re-runs the query on every render, so no state update is
+// needed here beyond letting Bubble Tea know the command finished.
+func (d Dashboard) syncIndex() tea.Cmd {
+	return func() tea.Msg {
+		if d.idx != nil {
+			_, _ = d.idx.Sync()
+		}
+		return indexSyncedMsg{}
 	}
 }
 
@@ -258,6 +280,27 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case attachMsg:
 		d.attachSessionID = msg.sessionID
 		return d, tea.Quit
+
+	case indexSyncedMsg:
+		return d, nil
+
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			// Rows start after the 2-line header (title + blank). In search
+			// mode each result renders as 2 lines (row + snippet), so halve
+			// the offset to map a screen row back to a result index.
+			row := msg.Y - 2
+			if d.mode == ModeSearch && d.searchQuery != "" {
+				row /= 2
+			}
+			row += d.scrollOffset
+			visible := d.filteredItems()
+			if row >= 0 && row < len(visible) {
+				d.cursor = row
+				d.adjustScroll()
+			}
+		}
+		return d, nil
 	}
 
 	return d, nil
@@ -416,6 +459,11 @@ func (d Dashboard) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return d, d.refreshItems()
 	case "enter":
 		d.searchQuery = d.searchInput.Value()
+		if item := d.selectedItem(); item != nil && item.IsSession() && item.Status != "archived" {
+			d.SaveState()
+			sessionID := item.ID
+			return d, func() tea.Msg { return attachMsg{sessionID: sessionID} }
+		}
 		d.mode = ModeDashboard
 		return d, d.refreshItems()
 	}
@@ -537,6 +585,13 @@ func (d Dashboard) isExpanded(id string) bool {
 //   - Otherwise: items respecting folder expand/collapse state
 func (d Dashboard) filteredItems() []ListItem {
 	if d.searchQuery != "" {
+		// Full-text search for queries long enough for the trigram tokenizer.
+		if len([]rune(d.searchQuery)) >= 3 {
+			if items := d.fullTextItems(); items != nil {
+				return items
+			}
+		}
+		// Fallback: in-memory name substring (short queries or no index).
 		query := strings.ToLower(d.searchQuery)
 		var result []ListItem
 		for _, item := range d.items {
