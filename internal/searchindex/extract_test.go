@@ -199,3 +199,27 @@ func TestParseTranscript_AllSynthetic(t *testing.T) {
 		t.Errorf("UserText = %q, want empty for all-synthetic transcript", ps.UserText)
 	}
 }
+
+func TestParseTranscript_SkipsIsMetaInjection(t *testing.T) {
+	// Injected skill/command expansions are user-role records flagged with
+	// top-level isMeta:true; they must never enter InitialPrompt/UserText.
+	jsonl := strings.Join([]string{
+		`{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Initialize the current Jarvis session with a title, worktree, and branch based on this task"}]}}`,
+		`{"type":"user","isMeta":true,"message":{"role":"user","content":"[Your previous response was interrupted]"}}`,
+		`{"type":"user","message":{"role":"user","content":"the socket hangs on detach"}}`,
+	}, "\n")
+
+	ps, err := ParseTranscript(strings.NewReader(jsonl))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if ps.InitialPrompt != "the socket hangs on detach" {
+		t.Errorf("InitialPrompt = %q, want the real prompt, not the isMeta injection", ps.InitialPrompt)
+	}
+	if strings.Contains(ps.UserText, "Initialize the current") {
+		t.Errorf("isMeta array-content injection leaked into UserText: %q", ps.UserText)
+	}
+	if strings.Contains(ps.UserText, "previous response") {
+		t.Errorf("isMeta string-content injection leaked into UserText: %q", ps.UserText)
+	}
+}

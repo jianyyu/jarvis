@@ -21,6 +21,7 @@ type ParsedSession struct {
 type transcriptRecord struct {
 	Type    string `json:"type"`
 	AITitle string `json:"aiTitle"`
+	IsMeta  bool   `json:"isMeta"` // injected skill/command expansion, not the human typing
 	Message *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
@@ -63,16 +64,33 @@ func ParseTranscript(r io.Reader) (ParsedSession, error) {
 	var ps ParsedSession
 	var users, assistants []string
 
+	// ReadSlice (not ReadBytes) so an oversized line is drained chunk by
+	// chunk without ever buffering more than maxLineBytes: a pathological
+	// multi-GB line costs bounded memory. Oversized lines are skippable
+	// noise, same as malformed ones — one bad line must not lose the session.
 	br := bufio.NewReaderSize(r, 64*1024)
+	lineBuf := make([]byte, 0, 64*1024)
+	lineLen := 0 // cumulative bytes of the current line, including discarded chunks
 	for {
-		line, err := br.ReadBytes('\n')
-		// Oversized lines are skippable noise, same as malformed ones — one
-		// pathological line must not lose the whole session.
-		if len(line) > 0 && len(line) <= maxLineBytes {
-			parseLine(line, &ps, &users, &assistants)
+		chunk, err := br.ReadSlice('\n')
+		lineLen += len(chunk)
+		if lineLen <= maxLineBytes {
+			lineBuf = append(lineBuf, chunk...)
+		} else {
+			lineBuf = lineBuf[:0] // over the cap: drop what we buffered, keep draining
 		}
+		if err == bufio.ErrBufferFull {
+			continue // line continues in the next slice
+		}
+		// Delimiter found (err == nil), final unterminated line (io.EOF), or
+		// a real read error — the current line, if kept, is complete.
+		if len(lineBuf) > 0 {
+			parseLine(lineBuf, &ps, &users, &assistants)
+		}
+		lineBuf = lineBuf[:0]
+		lineLen = 0
 		if err == io.EOF {
-			break // final unterminated line (if any) was handled above
+			break
 		}
 		if err != nil {
 			return ps, err
@@ -120,11 +138,12 @@ func parseLine(line []byte, ps *ParsedSession, users, assistants *[]string) {
 }
 
 // realUserText returns the human-typed text of a user record, or "" if the
-// record is synthetic. String content is the prompt itself; array content is
-// either a multimodal prompt (image + text blocks — keep the text) or a
-// tool_result carrier (no text blocks — synthetic).
+// record is synthetic. isMeta records are injected skill/command expansions
+// (real typed prompts never carry it). String content is the prompt itself;
+// array content is either a multimodal prompt (image + text blocks — keep the
+// text) or a tool_result carrier (no text blocks — synthetic).
 func realUserText(rec transcriptRecord) string {
-	if rec.Message == nil {
+	if rec.IsMeta || rec.Message == nil {
 		return ""
 	}
 	var s string
