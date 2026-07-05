@@ -54,6 +54,8 @@ func Open(path string) (*Index, error) {
 // future column change to sessions_fts or index_meta requires a filename bump
 // (e.g. index_v2.db) or an explicit DROP/recreate. The spec (§9) sanctions
 // deleting the index file to rebuild from transcripts.
+// Schema finalized pre-release; any dev index.db created from intermediate
+// commits should be deleted (spec §9).
 func (i *Index) migrate() error {
 	stmts := []string{
 		`CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(

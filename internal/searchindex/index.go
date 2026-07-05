@@ -3,6 +3,7 @@ package searchindex
 import (
 	"database/sql"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"jarvis/internal/paths"
@@ -10,8 +11,10 @@ import (
 )
 
 // Sync brings the index up to date with the session store. It (re)indexes any
-// session whose transcript is new or whose mtime changed, and removes rows for
-// sessions that no longer exist. Returns the number of sessions (re)indexed.
+// session whose transcript is new or whose mtime changed, refreshes the name
+// of sessions renamed in the store (also counted in the returned total), and
+// removes rows for sessions that no longer exist. Returns the number of
+// sessions (re)indexed.
 func (i *Index) Sync() (int, error) {
 	sessions, err := store.ListSessions(nil)
 	if err != nil {
@@ -26,21 +29,47 @@ func (i *Index) Sync() (int, error) {
 		if s.ClaudeSessionID == "" {
 			continue // no transcript to index
 		}
-		path, mtime, ok := transcriptPathFor(s.LaunchDir, s.WorktreeDir, s.ClaudeSessionID)
-		if !ok {
-			continue // transcript not found yet
-		}
 
 		var (
-			storedMtime         int64
-			storedName, aiTitle string
-			rowidRef            int64
+			storedMtime                     int64
+			storedName, aiTitle, storedPath string
+			rowidRef                        int64
 		)
-		err := i.db.QueryRow(
-			`SELECT indexed_mtime, COALESCE(name,''), COALESCE(ai_title,''), rowid_ref
+		metaErr := i.db.QueryRow(
+			`SELECT indexed_mtime, COALESCE(name,''), COALESCE(ai_title,''), COALESCE(transcript_path,''), rowid_ref
 			 FROM index_meta WHERE jarvis_id=?`, s.ID,
-		).Scan(&storedMtime, &storedName, &aiTitle, &rowidRef)
-		if err == nil && storedMtime == mtime {
+		).Scan(&storedMtime, &storedName, &aiTitle, &storedPath, &rowidRef)
+		haveMeta := metaErr == nil
+
+		// Locate the transcript: stat the stored path first — on the common
+		// nothing-changed path this avoids paths.ProjectDirs, which spawns a
+		// `git rev-parse` subprocess per session. Fall back to the full
+		// ProjectDirs lookup only when there is no stored path or it vanished.
+		var path string
+		var mtime int64
+		if haveMeta && storedPath != "" {
+			if fi, statErr := os.Stat(storedPath); statErr == nil {
+				path, mtime = storedPath, fi.ModTime().UnixNano()
+			}
+		}
+		if path == "" {
+			p, m, ok := transcriptPathFor(s.LaunchDir, s.WorktreeDir, s.ClaudeSessionID)
+			if !ok {
+				continue // transcript not found yet
+			}
+			path, mtime = p, m
+		}
+
+		if haveMeta && storedMtime == mtime {
+			if path != storedPath {
+				// Transcript moved but is otherwise unchanged: repair the
+				// stored path so future Syncs stat it directly again.
+				if _, err := i.db.Exec(
+					`UPDATE index_meta SET transcript_path=? WHERE jarvis_id=?`, path, s.ID,
+				); err != nil {
+					return reindexed, err
+				}
+			}
 			if storedName == s.Name {
 				continue // up to date
 			}
@@ -148,8 +177,19 @@ func (i *Index) rename(jarvisID string, rowid int64, name, aiTitle, launchDir st
 	return tx.Commit()
 }
 
+// pruneDeleted removes index rows for sessions no longer in the store. All
+// deletes run in one transaction: a partial prune would leave an index_meta
+// row pointing at a freed FTS rowid, which SQLite may hand to a later insert
+// for a live session — the next prune would then delete that live session's
+// FTS content.
 func (i *Index) pruneDeleted(live map[string]bool) error {
-	rows, err := i.db.Query(`SELECT jarvis_id, rowid_ref FROM index_meta`)
+	tx, err := i.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT jarvis_id, rowid_ref FROM index_meta`)
 	if err != nil {
 		return err
 	}
@@ -171,14 +211,14 @@ func (i *Index) pruneDeleted(live map[string]bool) error {
 	rows.Close()
 
 	for _, r := range stale {
-		if _, err := i.db.Exec(`DELETE FROM sessions_fts WHERE rowid=?`, r.rowid); err != nil {
+		if _, err := tx.Exec(`DELETE FROM sessions_fts WHERE rowid=?`, r.rowid); err != nil {
 			return err
 		}
-		if _, err := i.db.Exec(`DELETE FROM index_meta WHERE jarvis_id=?`, r.id); err != nil {
+		if _, err := tx.Exec(`DELETE FROM index_meta WHERE jarvis_id=?`, r.id); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // transcriptPathFor locates a session's transcript JSONL and returns its path
@@ -195,7 +235,7 @@ func transcriptPathFor(launchDir, worktreeDir, claudeID string) (string, int64, 
 		}
 	}
 	for _, dir := range candidates {
-		p := dir + string(os.PathSeparator) + claudeID + ".jsonl"
+		p := filepath.Join(dir, claudeID+".jsonl")
 		if fi, err := os.Stat(p); err == nil {
 			return p, fi.ModTime().UnixNano(), true
 		}
