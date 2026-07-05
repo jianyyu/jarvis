@@ -36,6 +36,9 @@ func (i *Index) Search(query string) ([]Result, error) {
 		return nil, nil
 	}
 	match := escapeFTSQuery(q)
+	if match == "" {
+		return nil, nil // query was all control characters
+	}
 
 	// 64 tokens: snippet counts tokens, and trigram tokens are 3-char windows,
 	// so 64 ≈ one line of context (FTS5 max).
@@ -85,6 +88,22 @@ func (i *Index) Search(query string) ([]Result, error) {
 // wrapping it as a single quoted phrase (doubling embedded quotes). With the
 // trigram tokenizer a quoted phrase matches any substring, which is the
 // substring-search behavior we want.
+//
+// C0 control characters are stripped first: a NUL truncates the bound
+// parameter at the C-string boundary (leaving the opening quote unterminated
+// — "SQL logic error: unterminated string"), and pasted \x02/\x03 bytes would
+// collide with the highlight markers. Tab/newline carry no meaning in a
+// search query either, so the whole range goes. Returns "" if nothing
+// remains; callers must treat that like an empty query.
 func escapeFTSQuery(q string) string {
+	q = strings.Map(func(r rune) rune {
+		if r < 0x20 {
+			return -1
+		}
+		return r
+	}, q)
+	if q == "" {
+		return ""
+	}
 	return `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
 }

@@ -105,8 +105,15 @@ func TestSearchSnippetIsReadable(t *testing.T) {
 
 func TestSearchEscapesSpecialChars(t *testing.T) {
 	idx := newSeededIndex(t)
-	// A query full of FTS5 syntax characters must not error.
-	if _, err := idx.Search(`"marketplace" AND (socket*`); err != nil {
-		t.Fatalf("special-char query errored: %v", err)
+	// Queries full of FTS5 syntax or control characters must not error.
+	for _, q := range []string{
+		`"marketplace" AND (socket*`,
+		"market\x00place", // NUL truncates the bound C string; must not break MATCH
+		"abc\x02def\x03",  // pasted highlight-marker bytes must be stripped
+		"\x00\x01\x1f",    // control-only query: must behave like an empty query
+	} {
+		if _, err := idx.Search(q); err != nil {
+			t.Errorf("query %q errored: %v", q, err)
+		}
 	}
 }
