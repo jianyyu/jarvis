@@ -1,6 +1,6 @@
 # Jarvis Architecture Guide
 
-> Last updated: 2026-04-04 | Covers commit `837f8e2` (branch `refactor/readability-improvements`)
+> Last updated: 2026-07-05 | Covers commit `837f8e2` (branch `refactor/readability-improvements`), plus the `internal/searchindex` full-text session search feature (branch `session-fulltext-search`)
 
 ---
 
@@ -130,6 +130,7 @@ Every Go package in the project, what it does, and its key files.
 | **model** | `internal/model/` | 81 | Pure data types with no logic: `Session`, `Folder`, `SidecarInfo`, `ChildRef`, plus the `SessionStatus` and `SidecarState` enums. Also `NewID()` for generating 8-char hex IDs. | `session.go` -- structs and enums; `id.go` -- ID generation |
 | **paths** | `internal/paths/` | 48 | Encodes CWD paths the way Claude Code does (`/home/user/repo` -> `-home-user-repo`) and returns candidate project directories for JSONL lookup. | `paths.go` |
 | **protocol** | `internal/protocol/` | 113 | Defines the IPC wire format: `Request` and `Response` structs, plus the `Codec` type that reads/writes newline-delimited JSON over a `net.Conn`. | `messages.go` -- struct definitions; `codec.go` -- encoder/decoder |
+| **searchindex** | `internal/searchindex/` | 666 | Full-text session search backed by SQLite FTS5 (`modernc.org/sqlite`, no cgo). `db.go` opens and migrates the index. `extract.go` denoises Claude JSONL transcripts into indexable text. `index.go` incrementally syncs the index against the session store. `search.go` runs ranked FTS queries and builds highlighted snippets. | `db.go:30` -- `Open()`; `extract.go:64` -- `ParseTranscript()`; `index.go:18` -- `Sync()`; `search.go:37` -- `Search()` |
 | **session** | `internal/session/` | 736 | The brain of Jarvis. `Manager` handles spawn, attach, resume, and status. `attach.go` implements raw-mode PTY passthrough. `resume.go` handles sidecar health checks and session recovery. `jsonl.go` reads Claude JSONL files for session detection and status derivation. | `manager.go:49` -- `Spawn()`; `manager.go:161` -- `Attach()`; `manager.go:191` -- `Resume()`; `attach.go:22` -- `Attach()` (socket-level); `resume.go:56` -- `RecoverAllSessions()`; `jsonl.go:100` -- `DeriveStatusFromJSONL()` |
 | **sidecar** | `internal/sidecar/` | 742 | The daemon that runs in the background. `Daemon.Run()` starts the PTY, socket listener, state detection, and persistence loops. `RingBuffer` stores recent output. `status.go` uses regex to detect approval prompts and idle states. `pty.go` wraps `creack/pty`. | `daemon.go:72` -- `Run()`; `daemon.go:174` -- `readPTY()`; `daemon.go:232` -- `handleConnection()`; `ringbuf.go` -- circular buffer; `status.go:25` -- `DetectState()`; `pty.go:13` -- `StartProcessWithPTY()` |
 | **store** | `internal/store/` | 310 | Filesystem persistence. `SaveSession`/`GetSession`/`ListSessions` for sessions, same pattern for folders. `WriteAtomic` does temp-file-then-rename. `JarvisHome()` resolves `$JARVIS_HOME` or defaults to `~/.jarvis`. | `session.go:16` -- `JarvisHome()`; `session.go:31` -- `SaveSession()`; `atomic.go:9` -- `WriteAtomic()` |
@@ -400,10 +401,29 @@ Every file that Jarvis writes to disk:
 | `~/.jarvis/config.yaml` | YAML | User (manual) | User-edited | Optional config: `worktree_base_dir` |
 | `~/.jarvis/dashboard_state.yaml` | YAML | `Dashboard.SaveState()` in `tui/dashboard.go:146` | On quit, on attach (before exiting TUI) | Persists expand/collapse state, cursor position, scroll offset across restarts |
 | `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` | JSONL | Claude Code itself (NOT Jarvis) | During Claude conversations | Jarvis reads this (never writes) to detect Claude session IDs and derive status |
+| `~/.jarvis/search/index.db` | SQLite (FTS5) | `searchindex.Index.Sync()` (`internal/searchindex/index.go:18`) | On dashboard start and on `ctrl+r` | Full-text index of session transcripts (name, initial prompt, user/assistant text, metadata). Disposable -- delete the file to force a full rebuild from the JSONL transcripts on the next Sync |
 
 The `JARVIS_HOME` environment variable overrides the `~/.jarvis` base path. This is heavily used in tests to isolate test data.
 
 All YAML files are written atomically via `store.WriteAtomic()` (`internal/store/atomic.go:9`): write to a temp file in the same directory, then `os.Rename`.
+
+---
+
+## 7.5 Full-Text Session Search
+
+`internal/searchindex/` maintains a SQLite FTS5 index of every session's Claude Code transcript, queried from the dashboard's search mode.
+
+**Schema** (`db.go:61`): one row per session in the `sessions_fts` virtual table, with separate weighted columns -- `name`, `initial_prompt`, `user_text`, `assistant_text`, `metadata` (name + AI title + launch dir) -- plus an `UNINDEXED` `jarvis_id`. A companion `index_meta` table tracks each session's transcript path, indexed mtime, and denormalized name/title so `Sync` can detect renames without reparsing the JSONL. The table uses `tokenize='trigram'`, so queries match arbitrary substrings rather than whole tokens, and CJK text (which has no word boundaries) is searchable.
+
+**Denoising parser** (`extract.go`): `ParseTranscript()` streams a JSONL transcript and keeps only human-authored signal. It drops `isMeta` records (injected skill/command expansions), synthetic `user`-role records (system reminders, hook output, command stdout/stderr, interruption notices -- see `syntheticUserPrefixes`), tool-call/tool-result noise (`isToolNoise`), and non-text content blocks (thinking, images). Long assistant replies are truncated to a head+tail window; oversized lines (>16MB) are skipped without ever buffering the full line.
+
+**Incremental Sync** (`index.go:18`): compares each session's transcript mtime against the stored `indexed_mtime`; only new or changed transcripts are reparsed and re-upserted. A rename with an unchanged transcript updates just the `name`/`metadata` columns in place. Sessions no longer in the store are pruned in one transaction. Sync runs as a background `tea.Cmd` on dashboard `Init()` and again on `ctrl+r`.
+
+**Search semantics** (`search.go:37`): the query is wrapped as a single quoted FTS phrase, so under the trigram tokenizer it matches as a case-insensitive substring; a multi-word query therefore requires an adjacent phrase match, not a bag-of-words match. Results are ranked with `bm25()` weights favoring `initial_prompt`, then `user_text`. Queries under 3 runes fall back to plain name-substring filtering (`tui/dashboard.go`'s `filteredItems()`), since the trigram index can't usefully match anything shorter.
+
+**Rendering and attach** (`tui/search.go`, `tui/view.go`): matching sessions render as two-line spotlight-style rows -- the normal session line plus a dimmed snippet line with FTS `snippet()` highlight markers restyled by `styleSnippet()`. Pressing Enter on a result reuses the normal dashboard attach flow (`attachMsg`), with no special-casing for search-originated selections.
+
+**Caveats**: snippet highlight markers can be legitimately absent (very long matched spans, token-boundary quirks) -- consumers must not assume every `Result.Snippet` is marked. Because matching is phrase-based, a query like "fix bug" won't match transcript text like "bug in the fix."
 
 ---
 
@@ -449,6 +469,18 @@ If you add new virtual items, you need to update the action guards.
 
 The dashboard sorts active groups (folders + unfiled sessions) and folder children by `CreatedAt` (newest first), not `UpdatedAt`. Once a session/folder is created, its position is fixed; activity does not reorder the list. Done sessions are hoisted to the `__done__` virtual folder regardless of which folder they were created in, so an active folder's children list shrinks when a child is marked done. Search still iterates the full flat list, so done items remain searchable.
 
+### FTS5 snippet windows count trigram tokens, not characters
+
+`internal/searchindex/search.go:47-51`
+
+The last argument to `snippet()` is a token count, and with `tokenize='trigram'` each token is an overlapping 3-character window, so N tokens covers only about N+2 characters (12 tokens ≈ 14 characters), not N words or N characters. The code passes 64, FTS5's maximum, which comes out to roughly one line of context. A "reasonable-looking" number like 20 would truncate every snippet to a handful of characters.
+
+### PRAGMAs must go through the DSN, not a plain `Exec`
+
+`internal/searchindex/db.go:30-39`
+
+`database/sql` pools multiple underlying connections. A plain `db.Exec("PRAGMA journal_mode=WAL")` issued after `Open()` only reaches whichever single pooled connection happens to serve that call -- every other connection the pool later opens (and hence every other concurrent reader or writer) never sees WAL mode or the busy timeout, reintroducing `SQLITE_BUSY` failures under concurrent Sync/Search. `Open()` instead appends `_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)` to the DSN itself, so `modernc.org/sqlite` applies both pragmas to every connection at connect time.
+
 ---
 
 ## 9. Code Pointers
@@ -477,6 +509,10 @@ Quick-reference table: "If you want to change X, look at Y."
 | Change the slug generation for branch names | `internal/worktree/worktree.go:28` -- `Slugify()` |
 | Add a new integration test | `integration_test.go` -- follow the pattern of existing `Test*` functions; use `testEnv(t)` for isolation |
 | Change how `JARVIS_HOME` is resolved | `internal/store/session.go:16` -- `JarvisHome()` |
+| Change search ranking weights | `internal/searchindex/search.go:55` -- the `bm25(sessions_fts, ...)` weight list |
+| Change what transcript content gets indexed | `internal/searchindex/extract.go` -- `syntheticUserPrefixes`, `isToolNoise()`, `textBlocks()` |
+| Change the snippet window | `internal/searchindex/search.go:51` -- the `64` argument to `snippet()` |
+| Change search-mode layout/keys | `internal/tui/dashboard.go:465` -- `handleSearchKey()`; `internal/tui/view.go` -- search-mode rendering |
 
 ---
 
