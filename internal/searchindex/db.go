@@ -70,7 +70,8 @@ func (i *Index) migrate() error {
 			rowid_ref       INTEGER NOT NULL,
 			transcript_path TEXT,
 			indexed_mtime   INTEGER,
-			ai_title        TEXT
+			ai_title        TEXT,
+			name            TEXT
 		)`,
 	}
 	for _, s := range stmts {

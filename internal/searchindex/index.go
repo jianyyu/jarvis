@@ -31,10 +31,26 @@ func (i *Index) Sync() (int, error) {
 			continue // transcript not found yet
 		}
 
-		var storedMtime int64
-		err := i.db.QueryRow(`SELECT indexed_mtime FROM index_meta WHERE jarvis_id=?`, s.ID).Scan(&storedMtime)
+		var (
+			storedMtime         int64
+			storedName, aiTitle string
+			rowidRef            int64
+		)
+		err := i.db.QueryRow(
+			`SELECT indexed_mtime, COALESCE(name,''), COALESCE(ai_title,''), rowid_ref
+			 FROM index_meta WHERE jarvis_id=?`, s.ID,
+		).Scan(&storedMtime, &storedName, &aiTitle, &rowidRef)
 		if err == nil && storedMtime == mtime {
-			continue // up to date
+			if storedName == s.Name {
+				continue // up to date
+			}
+			// Transcript unchanged but the session was renamed: update the
+			// name and metadata columns in place without reparsing the JSONL.
+			if err := i.rename(s.ID, rowidRef, s.Name, aiTitle, s.LaunchDir); err != nil {
+				return reindexed, err
+			}
+			reindexed++
+			continue
 		}
 
 		f, err := os.Open(path)
@@ -94,14 +110,38 @@ func (i *Index) upsert(jarvisID, name string, ps ParsedSession, metadata, path s
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO index_meta(jarvis_id, rowid_ref, transcript_path, indexed_mtime, ai_title)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO index_meta(jarvis_id, rowid_ref, transcript_path, indexed_mtime, ai_title, name)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(jarvis_id) DO UPDATE SET
 		   rowid_ref=excluded.rowid_ref,
 		   transcript_path=excluded.transcript_path,
 		   indexed_mtime=excluded.indexed_mtime,
-		   ai_title=excluded.ai_title`,
-		jarvisID, newRowid, path, mtime, ps.AITitle,
+		   ai_title=excluded.ai_title,
+		   name=excluded.name`,
+		jarvisID, newRowid, path, mtime, ps.AITitle, name,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// rename updates a session's name (and derived metadata) in place when the
+// transcript itself is unchanged, avoiding a full reparse of the JSONL.
+func (i *Index) rename(jarvisID string, rowid int64, name, aiTitle, launchDir string) error {
+	tx, err := i.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	metadata := strings.Join([]string{name, aiTitle, launchDir}, " ")
+	if _, err := tx.Exec(
+		`UPDATE sessions_fts SET name=?, metadata=? WHERE rowid=?`, name, metadata, rowid,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE index_meta SET name=? WHERE jarvis_id=?`, name, jarvisID,
 	); err != nil {
 		return err
 	}

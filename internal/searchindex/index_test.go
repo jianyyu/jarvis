@@ -3,6 +3,7 @@ package searchindex
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,57 @@ func TestSyncIndexesAndIsIncremental(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("second sync reindexed %d, want 0 (incremental)", n)
+	}
+}
+
+func TestSyncUpdatesRenamedSession(t *testing.T) {
+	t.Setenv("JARVIS_HOME", t.TempDir())
+	launch := t.TempDir()
+	seedSession(t, "sess1", "Deadlock fix", launch, "claude-1",
+		`{"type":"user","message":{"role":"user","content":"the socket hangs on detach forever"}}`)
+
+	idx, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer idx.Close()
+	if _, err := idx.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// Rename the session in the store without touching the transcript.
+	s, err := store.GetSession("sess1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	s.Name = "Marketplace socket fix"
+	if err := store.SaveSession(s); err != nil {
+		t.Fatalf("save renamed session: %v", err)
+	}
+
+	n, err := idx.Sync()
+	if err != nil {
+		t.Fatalf("sync 2: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("sync after rename reindexed %d, want 1", n)
+	}
+
+	var name, metadata string
+	if err := idx.db.QueryRow(`SELECT name, metadata FROM sessions_fts`).Scan(&name, &metadata); err != nil {
+		t.Fatalf("query fts row: %v", err)
+	}
+	if name != "Marketplace socket fix" {
+		t.Fatalf("fts name = %q, want new name", name)
+	}
+	if !strings.Contains(metadata, "Marketplace socket fix") {
+		t.Fatalf("fts metadata %q does not contain new name", metadata)
+	}
+
+	var count int
+	idx.db.QueryRow(`SELECT count(*) FROM sessions_fts`).Scan(&count)
+	if count != 1 {
+		t.Fatalf("sessions_fts has %d rows after rename, want 1", count)
 	}
 }
 

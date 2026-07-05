@@ -20,7 +20,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if _, err := idx.db.Exec(`INSERT INTO sessions_fts(jarvis_id, name) VALUES ('x', 'hello')`); err != nil {
 		t.Fatalf("sessions_fts not usable: %v", err)
 	}
-	if _, err := idx.db.Exec(`INSERT INTO index_meta(jarvis_id, rowid_ref, transcript_path, indexed_mtime, ai_title) VALUES ('x', 1, '/p', 0, '')`); err != nil {
+	if _, err := idx.db.Exec(`INSERT INTO index_meta(jarvis_id, rowid_ref, transcript_path, indexed_mtime, ai_title, name) VALUES ('x', 1, '/p', 0, '', '')`); err != nil {
 		t.Fatalf("index_meta not usable: %v", err)
 	}
 
