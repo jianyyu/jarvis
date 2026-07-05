@@ -4,6 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"jarvis/internal/model"
 	"jarvis/internal/searchindex"
 )
 
@@ -41,6 +42,7 @@ func (d Dashboard) fullTextItems() []ListItem {
 			ID:     r.JarvisID,
 			Name:   r.Name,
 			Status: r.Status,
+			State:  model.SidecarState(r.State),
 			Detail: r.Snippet,
 			Age:    r.Age,
 		})

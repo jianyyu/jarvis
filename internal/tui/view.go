@@ -43,7 +43,11 @@ func (d Dashboard) View() string {
 	visibleItems := d.filteredItems()
 
 	if len(visibleItems) == 0 {
-		b.WriteString(dimStyle.Render("  No sessions. Press [n] to create one.\n"))
+		if d.searchQuery != "" {
+			b.WriteString(dimStyle.Render("  No matches.\n"))
+		} else {
+			b.WriteString(dimStyle.Render("  No sessions. Press [n] to create one.\n"))
+		}
 	}
 
 	// maxVisibleItems accounts for FTS results rendering as two lines each

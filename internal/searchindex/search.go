@@ -27,6 +27,10 @@ type Result struct {
 	Snippet  string
 	Age      string
 	Status   model.SessionStatus
+	// State is the session's last persisted sidecar state (blocked sessions
+	// are exactly what users search for). It is an approximation read from
+	// the store — sidecars are never pinged per result.
+	State string
 }
 
 // Search runs a full-text query and returns matching sessions, best first.
@@ -67,6 +71,9 @@ func (i *Index) Search(query string) ([]Result, error) {
 		if err != nil {
 			continue // stale row; session gone
 		}
+		if sess.Status == model.StatusArchived {
+			continue // hidden everywhere else in the UI; done sessions stay searchable
+		}
 		name := sess.Name
 		if name == "" || name == untitledPlaceholder {
 			if aiTitle != "" {
@@ -79,6 +86,7 @@ func (i *Index) Search(query string) ([]Result, error) {
 			Snippet:  snip,
 			Age:      ui.FormatAge(sess.UpdatedAt),
 			Status:   sess.Status,
+			State:    sess.LastKnownState,
 		})
 	}
 	return results, rows.Err()

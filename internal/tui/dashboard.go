@@ -79,6 +79,9 @@ type Dashboard struct {
 	cmdCallback func(string) tea.Cmd // called when the user presses Enter
 
 	// Transient status message shown at the bottom.
+	// NOTE: currently never set. If wired up, it renders extra lines that
+	// maxVisibleItems' search-mode line budget does not account for — extend
+	// that budget before showing it while search results are active.
 	statusMsg string
 	err       error
 
@@ -297,6 +300,9 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if d.searchResultsActive() {
 				row /= 2
 			}
+			if row >= d.maxVisibleItems() {
+				return d, nil // click landed below the rendered list (footer)
+			}
 			row += d.scrollOffset
 			visible := d.filteredItems()
 			if row < len(visible) {
@@ -448,7 +454,9 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "ctrl+r":
-		return d, d.refreshItems()
+		// Also re-sync the search index so newly-grown transcripts become
+		// searchable without restarting.
+		return d, tea.Batch(d.refreshItems(), d.syncIndex())
 	}
 
 	return d, nil

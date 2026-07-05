@@ -4,6 +4,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"jarvis/internal/model"
+	"jarvis/internal/store"
 )
 
 func newSeededIndex(t *testing.T) *Index {
@@ -100,6 +103,56 @@ func TestSearchSnippetIsReadable(t *testing.T) {
 	}
 	if !strings.Contains(snip, MarkOpen) || !strings.Contains(snip, MarkClose) {
 		t.Errorf("snippet missing highlight markers: %q", snip)
+	}
+}
+
+func TestSearchStateAndArchivedFilter(t *testing.T) {
+	t.Setenv("JARVIS_HOME", t.TempDir())
+	launch := t.TempDir()
+	seedSession(t, "sess-blocked", "blocked deploy", launch, "c-blocked",
+		`{"type":"user","message":{"role":"user","content":"please approve the gadget rollout plan"}}`)
+	seedSession(t, "sess-arch", "old gadget work", launch, "c-arch",
+		`{"type":"user","message":{"role":"user","content":"the gadget rollout plan from last quarter"}}`)
+
+	sb, err := store.GetSession("sess-blocked")
+	if err != nil {
+		t.Fatalf("get sess-blocked: %v", err)
+	}
+	sb.LastKnownState = string(model.StateWaitingForApproval)
+	if err := store.SaveSession(sb); err != nil {
+		t.Fatalf("save sess-blocked: %v", err)
+	}
+
+	sa, err := store.GetSession("sess-arch")
+	if err != nil {
+		t.Fatalf("get sess-arch: %v", err)
+	}
+	sa.Status = model.StatusArchived
+	if err := store.SaveSession(sa); err != nil {
+		t.Fatalf("save sess-arch: %v", err)
+	}
+
+	idx, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	if _, err := idx.Sync(); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	res, err := idx.Search("gadget rollout")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected exactly 1 result (archived excluded), got %+v", res)
+	}
+	if res[0].JarvisID != "sess-blocked" {
+		t.Errorf("expected sess-blocked, got %q", res[0].JarvisID)
+	}
+	if res[0].State != string(model.StateWaitingForApproval) {
+		t.Errorf("State = %q, want %q", res[0].State, model.StateWaitingForApproval)
 	}
 }
 
