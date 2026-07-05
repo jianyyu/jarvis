@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"jarvis/internal/store"
 
@@ -27,6 +28,11 @@ func DefaultPath() string {
 // background Sync writes coexist with Search reads without instant SQLITE_BUSY
 // failures.
 func Open(path string) (*Index, error) {
+	// The path is embedded in a DSN; modernc's driver truncates the filename
+	// at the first '?' or '#' and would silently write the DB elsewhere.
+	if strings.ContainsAny(path, "?#") {
+		return nil, fmt.Errorf("index path must not contain '?' or '#': %q", path)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir index dir: %w", err)
 	}
@@ -43,6 +49,11 @@ func Open(path string) (*Index, error) {
 	return idx, nil
 }
 
+// migrate creates the schema if absent. Note: CREATE ... IF NOT EXISTS
+// silently no-ops on a pre-existing table with a stale column set, so any
+// future column change to sessions_fts or index_meta requires a filename bump
+// (e.g. index_v2.db) or an explicit DROP/recreate. The spec (§9) sanctions
+// deleting the index file to rebuild from transcripts.
 func (i *Index) migrate() error {
 	stmts := []string{
 		`CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
