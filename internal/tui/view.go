@@ -46,12 +46,10 @@ func (d Dashboard) View() string {
 		b.WriteString(dimStyle.Render("  No sessions. Press [n] to create one.\n"))
 	}
 
-	maxRows := d.viewportHeight()
-	if d.mode == ModeSearch && d.searchQuery != "" {
-		// Search results render as two lines each (row + snippet); halve the
-		// row budget so the footer/input never scrolls off screen.
-		maxRows /= 2
-	}
+	// maxVisibleItems accounts for FTS results rendering as two lines each
+	// (row + snippet) plus the search help hint, so the footer/input never
+	// scrolls off screen. adjustScroll uses the same budget.
+	maxRows := d.maxVisibleItems()
 	end := d.scrollOffset + maxRows
 	if end > len(visibleItems) {
 		end = len(visibleItems)
@@ -71,7 +69,7 @@ func (d Dashboard) View() string {
 		} else {
 			b.WriteString("  " + indent + line + "\n")
 		}
-		if d.mode == ModeSearch && item.IsSession() && item.Detail != "" {
+		if d.searchResultsActive() && item.IsSession() && item.Detail != "" {
 			b.WriteString("      " + dimStyle.Render("↳ ") + styleSnippet(item.Detail) + "\n")
 		}
 	}
@@ -85,6 +83,9 @@ func (d Dashboard) View() string {
 	switch d.mode {
 	case ModeSearch:
 		b.WriteString("\n  " + inputStyle.Render("/") + " " + d.searchInput.View())
+		if d.searchResultsActive() {
+			b.WriteString("\n" + helpStyle.Render("  [↑↓] pick  [enter] attach  [esc] back"))
+		}
 	case ModeInput:
 		b.WriteString("\n  " + inputStyle.Render(d.cmdPrompt) + d.cmdInput.View())
 	default:

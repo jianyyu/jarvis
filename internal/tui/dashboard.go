@@ -286,16 +286,20 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// Rows start after the 2-line header (title + blank). In search
-			// mode each result renders as 2 lines (row + snippet), so halve
-			// the offset to map a screen row back to a result index.
+			// Rows start after the 2-line header (title + blank). When FTS
+			// results are showing, each result renders as 2 lines (row +
+			// snippet), so halve the offset to map a screen row back to a
+			// result index.
 			row := msg.Y - 2
-			if d.mode == ModeSearch && d.searchQuery != "" {
+			if row < 0 {
+				return d, nil // click landed on the header
+			}
+			if d.searchResultsActive() {
 				row /= 2
 			}
 			row += d.scrollOffset
 			visible := d.filteredItems()
-			if row >= 0 && row < len(visible) {
+			if row < len(visible) {
 				d.cursor = row
 				d.adjustScroll()
 			}
@@ -452,6 +456,18 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (d Dashboard) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "up":
+		if d.cursor > 0 {
+			d.cursor--
+			d.adjustScroll()
+		}
+		return d, nil
+	case "down":
+		if d.cursor < len(d.filteredItems())-1 {
+			d.cursor++
+			d.adjustScroll()
+		}
+		return d, nil
 	case "esc":
 		d.mode = ModeDashboard
 		d.searchQuery = ""
@@ -549,7 +565,7 @@ func (d *Dashboard) toggleFolder(id string) {
 	d.expandState[id] = !current
 }
 
-// viewportHeight returns the number of item rows that fit on screen.
+// viewportHeight returns the number of screen lines available for item rows.
 func (d Dashboard) viewportHeight() int {
 	maxRows := d.height - 4 // reserve header (2 lines) + footer (2 lines)
 	if maxRows < 5 {
@@ -558,9 +574,24 @@ func (d Dashboard) viewportHeight() int {
 	return maxRows
 }
 
+// maxVisibleItems returns how many list items fit in the viewport. When FTS
+// results are showing, each item takes 2 lines (row + snippet) and the footer
+// gains a 2-line help hint, so fewer items fit. Both the View render window
+// and adjustScroll use this so rendering and scrolling always agree.
+func (d Dashboard) maxVisibleItems() int {
+	rows := d.viewportHeight()
+	if d.searchResultsActive() {
+		rows = (rows - 2) / 2 // -2: search-mode help hint below the input
+		if rows < 1 {
+			rows = 1
+		}
+	}
+	return rows
+}
+
 // adjustScroll ensures the cursor stays within the visible viewport.
 func (d *Dashboard) adjustScroll() {
-	maxRows := d.viewportHeight()
+	maxRows := d.maxVisibleItems()
 	if d.cursor < d.scrollOffset {
 		d.scrollOffset = d.cursor
 	}
@@ -586,12 +617,12 @@ func (d Dashboard) isExpanded(id string) bool {
 func (d Dashboard) filteredItems() []ListItem {
 	if d.searchQuery != "" {
 		// Full-text search for queries long enough for the trigram tokenizer.
-		if len([]rune(d.searchQuery)) >= 3 {
-			if items := d.fullTextItems(); items != nil {
-				return items
-			}
+		// No fallthrough on empty/error results: an honest "no results" beats
+		// silently switching to name-substring semantics mid-query.
+		if d.fullTextEligible() {
+			return d.fullTextItems()
 		}
-		// Fallback: in-memory name substring (short queries or no index).
+		// Name substring path: short queries or no index.
 		query := strings.ToLower(d.searchQuery)
 		var result []ListItem
 		for _, item := range d.items {
