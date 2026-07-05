@@ -48,7 +48,7 @@ func (i *Index) Sync() (int, error) {
 		var path string
 		var mtime int64
 		if haveMeta && storedPath != "" {
-			if fi, statErr := os.Stat(storedPath); statErr == nil {
+			if fi, statErr := os.Stat(storedPath); statErr == nil && !fi.IsDir() {
 				path, mtime = storedPath, fi.ModTime().UnixNano()
 			}
 		}
@@ -236,7 +236,7 @@ func transcriptPathFor(launchDir, worktreeDir, claudeID string) (string, int64, 
 	}
 	for _, dir := range candidates {
 		p := filepath.Join(dir, claudeID+".jsonl")
-		if fi, err := os.Stat(p); err == nil {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 			return p, fi.ModTime().UnixNano(), true
 		}
 	}

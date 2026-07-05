@@ -1,0 +1,85 @@
+package searchindex
+
+import (
+	"strings"
+
+	"jarvis/internal/model"
+	"jarvis/internal/store"
+	"jarvis/internal/ui"
+)
+
+// Highlight markers wrapped around matched terms by snippet(). The TUI restyles
+// them; they are ASCII control chars that never appear in real text.
+const (
+	MarkOpen  = "\x02"
+	MarkClose = "\x03"
+)
+
+const untitledPlaceholder = "(untitled chat)"
+
+// Result is one search hit, resolved to a jarvis session.
+type Result struct {
+	JarvisID string
+	Name     string
+	Snippet  string
+	Age      string
+	Status   model.SessionStatus
+}
+
+// Search runs a full-text query and returns matching sessions, best first.
+func (i *Index) Search(query string) ([]Result, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil, nil
+	}
+	match := escapeFTSQuery(q)
+
+	rows, err := i.db.Query(
+		`SELECT f.jarvis_id, COALESCE(m.ai_title,''),
+		        snippet(sessions_fts, -1, ?, ?, '…', 12)
+		 FROM sessions_fts f
+		 JOIN index_meta m ON m.rowid_ref = f.rowid
+		 WHERE sessions_fts MATCH ?
+		 ORDER BY bm25(sessions_fts, 0.0, 12.0, 8.0, 2.0, 1.0, 3.0)
+		 LIMIT 50`,
+		MarkOpen, MarkClose, match,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []Result
+	for rows.Next() {
+		var id, aiTitle, snip string
+		if err := rows.Scan(&id, &aiTitle, &snip); err != nil {
+			return nil, err
+		}
+		sess, err := store.GetSession(id)
+		if err != nil {
+			continue // stale row; session gone
+		}
+		name := sess.Name
+		if name == "" || name == untitledPlaceholder {
+			if aiTitle != "" {
+				name = aiTitle
+			}
+		}
+		results = append(results, Result{
+			JarvisID: id,
+			Name:     name,
+			Snippet:  snip,
+			Age:      ui.FormatAge(sess.UpdatedAt),
+			Status:   sess.Status,
+		})
+	}
+	return results, rows.Err()
+}
+
+// escapeFTSQuery turns arbitrary user input into a safe FTS5 MATCH expression by
+// wrapping it as a single quoted phrase (doubling embedded quotes). With the
+// trigram tokenizer a quoted phrase matches any substring, which is the
+// substring-search behavior we want.
+func escapeFTSQuery(q string) string {
+	return `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
+}
