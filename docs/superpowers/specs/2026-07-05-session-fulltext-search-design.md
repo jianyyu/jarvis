@@ -64,13 +64,17 @@ cgo + a C toolchain and the `sqlite_fts5` build tag.)
 **Storage:** `~/.jarvis/search/index.db` (fits the existing `~/.jarvis/` layout, honors
 `$JARVIS_HOME`).
 
-**Schema:**
+**Schema:** one row per session; the denoised content is split into **weighted columns**
+(not lumped into a single `body`) so bm25 can rank a hit in the jarvis name / first prompt
+above a hit buried in an assistant reply.
 ```sql
 CREATE VIRTUAL TABLE sessions_fts USING fts5(
   jarvis_id UNINDEXED,   -- returned for attach; not tokenized/searched
-  name,                  -- session display name
-  title,                 -- Claude ai-title (may be empty)
-  body,                  -- concatenated user/assistant `text` blocks only
+  name,                  -- jarvis session name (the dashboard title) — highest weight
+  initial_prompt,        -- first *real* human prompt (best "what was this about") — high weight
+  user_text,             -- all real user messages, concatenated & denoised
+  assistant_text,        -- all assistant text replies, denoised & per-reply truncated
+  metadata,              -- name + ai-title + launch_dir (+ git branch if known)
   tokenize = 'trigram'
 );
 
@@ -81,11 +85,14 @@ CREATE TABLE index_meta (
 );
 ```
 
+Note the **jarvis session name is a dedicated, highest-weighted column** — so search matches
+the dashboard title exactly as it does today, just now unified into the same FTS query as the
+content. The Claude `ai-title` also lives in `metadata`.
+
 **Tokenizer: `trigram`.** Enables substring matching across mixed Chinese/English (e.g.
 searching `飞机`). Limitation: FTS5 trigram requires queries of **≥ 3 characters**. For
 queries shorter than 3 characters we fall back to an in-memory substring scan over session
-names + titles (see §4.4). This fallback is name/title only — short-query content search is
-out of scope.
+names (see §4.4). This fallback is name-only — short-query content search is out of scope.
 
 ### 4.2 Indexing — `Sync()`
 
@@ -96,19 +103,37 @@ Incremental, driven by file mtime:
    candidate directory, mirroring resume logic).
 2. `stat` the transcript. If it does not exist → skip (session has no transcript yet).
 3. If `mtime == index_meta.indexed_mtime` → up to date, skip.
-4. Otherwise re-parse the transcript (streaming, line by line):
-   - Keep `user`/`assistant` records; from their `content`, collect `text` blocks only.
-     Skip `tool_use`, `tool_result`, `thinking`, `image`, and non-conversational record
-     types.
-   - Capture the latest `ai-title` record as `title`.
-   - Concatenate the text into `body`, capped at **128 KB** per session (worst-case guard;
-     the 4.2% ratio means this is rarely hit).
-   - `INSERT OR REPLACE` the `sessions_fts` row and update `index_meta`.
+4. Otherwise re-parse the transcript (streaming, line by line) into buckets, applying the
+   denoising rules below, then map buckets → columns and `INSERT OR REPLACE` the row +
+   update `index_meta`.
 5. Delete `sessions_fts` / `index_meta` rows whose session no longer exists in the store.
 
+**Parsing & denoising rules** (the core of `extract.go` — this is what keeps results clean;
+adapted from a proven Claude-transcript indexer):
+
+- **`extractContent`**: a record's `content` may be a string or a block array — take only
+  `type: "text"` blocks; drop `tool_use`, `tool_result`, `thinking`, `image`.
+- **Only `user` / `assistant` records** reach the buckets; `system`, `file-history-snapshot`,
+  `attachment`, `queue-operation`, etc. are skipped.
+- **`isSyntheticUserText`** — skip `user` records that aren't you typing: `tool_result`
+  carriers, `<system-reminder>` blocks, hook `additionalContext`, `[Request interrupted…]`,
+  local-command stdout/`<local-command-…>`, and other known injected prefixes. These must not
+  count as `initial_prompt` or enter `user_text`. (Needs a jarvis-tuned prefix list.)
+- **`firstPrompt`** — the first *real* human `user` message (post-synthetic-filter), truncated
+  to ~200 chars → `initial_prompt` column.
+- **user bucket** — remaining real user messages → `user_text`.
+- **`detectToolNoise`** — skip assistant filler: very short (<50 chars) or pure narration like
+  `"Let me read…"`, `"I'll check…"`, `[Tool: …]`. These don't enter `assistant_text`.
+- **assistant truncation** — for a kept reply >800 chars, store `first 500 + "…" + last 200`
+  (not the whole thing) so one long reply can't dominate the index.
+- **`<5` char** content is dropped outright.
+- **`metadata`** column = `name + ai-title + launch_dir` (+ git branch if resolvable).
+
 Streaming parse ⇒ memory stays flat regardless of transcript size (one line buffered at a
-time). First run indexes everything once; subsequent runs touch only changed transcripts
-(active sessions whose logs grew), so `Sync()` is cheap to call often.
+time), and the denoising means we index far less than even the 4.2% raw-text figure.
+
+First run indexes everything once; subsequent runs touch only changed transcripts (active
+sessions whose logs grew), so `Sync()` is cheap to call often.
 
 **When Sync runs:** on dashboard start, as a background `tea.Cmd`. It does not block the UI;
 results simply improve once it completes. (Search works against whatever is already indexed.)
@@ -127,24 +152,30 @@ type Result struct {
 
 One query:
 ```sql
-SELECT jarvis_id, name, title,
-       snippet(sessions_fts, 3, '\x02', '\x03', '…', 12) AS snip
+SELECT jarvis_id, name,
+       snippet(sessions_fts, -1, '\x02', '\x03', '…', 12) AS snip
 FROM sessions_fts
 WHERE sessions_fts MATCH ?
-ORDER BY bm25(sessions_fts, 0.0, 10.0, 5.0, 1.0)   -- jarvis_id, name, title, body
+ORDER BY bm25(sessions_fts, 0.0, 12.0, 8.0, 2.0, 1.0, 3.0)
 LIMIT 50;
 ```
-- `snippet()`'s second argument is the column index; `3` targets `body` (where content
-  matches live — name/title matches are short and surfaced via the row's title anyway).
+- **bm25 needs one weight per column, in column order — including the `UNINDEXED`
+  `jarvis_id` (weight `0.0`).** Order: `jarvis_id=0, name=12, initial_prompt=8, user_text=2,
+  assistant_text=1, metadata=3`. So a hit in the jarvis session name outranks the first
+  prompt, which outranks raw conversation body; metadata (ai-title etc.) sits in between.
+- `snippet()`'s second arg is the column index; **`-1` auto-selects the best-matching
+  column**, so the excerpt comes from wherever the match actually is (name, first prompt, or
+  a reply) without us guessing. *(Plan step 0: verify `snippet(..., -1, ...)` behaves this way
+  in the vendored FTS5 build; if not, fall back to snippeting `assistant_text`/`user_text` and
+  picking the non-empty best in Go.)*
 - `snippet()` wraps matches in sentinel markers (`\x02`/`\x03`) that the TUI restyles with
   lipgloss (bold/color) — avoids collision with real text.
-- **`bm25` needs one weight per column, in column order — including the `UNINDEXED`
-  `jarvis_id` (weight `0.0`).** Omitting it would misalign every weight. Order:
-  `jarvis_id=0, name=10, title=5, body=1`, so name > title > body.
 - The query string is built from user input escaped for FTS5 (wrap tokens to avoid syntax
   errors from punctuation/quotes).
 - `Age`/`Status`/`Name` finalized by looking up each returned `jarvis_id` in the store
-  (also validates the row isn't stale). Rows whose session is gone are dropped.
+  (also validates the row isn't stale). Rows whose session is gone are dropped. `Name` is the
+  jarvis session name, falling back to the ai-title only if the name is empty or the
+  `"(untitled chat)"` placeholder.
 
 FTS5 lookups are sub-millisecond, so `Search()` runs **synchronously per keystroke** from the
 TUI. If profiling later shows lag, wrap it in a debounced `tea.Cmd` (interface unchanged).
@@ -152,8 +183,8 @@ TUI. If profiling later shows lag, wrap it in a debounced `tea.Cmd` (interface u
 ### 4.4 Short-query fallback
 
 When `len([]rune(query)) < 3`: skip FTS, filter the already-loaded dashboard items by
-substring over name + title in memory (today's behavior, extended to title). Keeps 1–2
-character queries responsive and avoids trigram's minimum-length error.
+substring over the session name in memory (today's behavior). Keeps 1–2 character queries
+responsive and avoids trigram's minimum-length error.
 
 ## 5. TUI integration (`internal/tui`)
 
@@ -179,13 +210,13 @@ character queries responsive and avoids trigram's minimum-length error.
 
 | Situation | Behavior |
 |---|---|
-| `search/index.db` missing/unopenable | Log; search silently falls back to name/title in-memory filter. Never crashes the TUI. |
+| `search/index.db` missing/unopenable | Log; search silently falls back to the in-memory name substring filter. Never crashes the TUI. |
 | FTS5 not available in driver build | Caught at plan step 0; would block the feature — resolve before building. |
 | Transcript path can't be resolved (encoding mismatch) | Session simply isn't indexed; still matchable by name. |
 | Session has no `claude_session_id` | Not indexed (no transcript); matchable by name. |
 | Malformed / partially-written JSONL line | Skip that line; index the rest (active sessions are being appended to concurrently). |
 | Query with FTS5-special characters | Escaped/quoted before MATCH; on parse error, fall back to in-memory filter for that keystroke. |
-| Query < 3 chars | In-memory name/title substring fallback (§4.4). |
+| Query < 3 chars | In-memory name substring fallback (§4.4). |
 | Returned `jarvis_id` no longer in store | Dropped from results. |
 | Concurrent write during Sync | SQLite single-writer; Sync runs in one goroutine. Reads (Search) use a separate connection. Use WAL mode. |
 
@@ -193,17 +224,26 @@ character queries responsive and avoids trigram's minimum-length error.
 
 High-value logic is in `internal/searchindex` (pure-ish, DB-backed) and gets real coverage:
 
-- **Parse/extract:** given sample JSONL bytes (mixed record types, tool payloads, ai-title,
-  malformed line) → assert `body` contains only user/assistant text, `title` captured, cap
-  respected.
+- **Parse/extract (`extract.go`) — the highest-value tests, since denoising is the whole
+  point:** given sample JSONL bytes covering each rule → assert
+  - synthetic `user` records (`<system-reminder>`, tool_result carriers, `[Request
+    interrupted]`, local-command stdout) are excluded from `initial_prompt` and `user_text`;
+  - `initial_prompt` = the first *real* human message, truncated to ~200 chars;
+  - assistant tool-noise (`"Let me read…"`, `[Tool: …]`, <50 chars) excluded from
+    `assistant_text`;
+  - an assistant reply >800 chars stored as `first 500 + "…" + last 200`;
+  - only `text` blocks kept (images/tool_use dropped);
+  - `metadata` = name + ai-title + launch_dir.
 - **Sync incrementality:** index a temp transcript; re-`Sync()` with unchanged mtime → no
   reparse (assert via a parse counter/spy); bump mtime → reparsed; delete session → row
   removed.
-- **Search:** seed rows; assert MATCH returns expected `jarvis_id`s, bm25 ordering
-  (name hit ranks above body hit), `snippet()` markers present around the match; Chinese
-  query (`飞机`) matches Chinese body via trigram; 2-char query routes to fallback.
-- **FTS5 availability (plan step 0):** a test that creates the virtual table — fails loudly
-  if the driver lacks FTS5.
+- **Search:** seed rows; assert MATCH returns expected `jarvis_id`s; bm25 ordering (a hit in
+  `name` ranks above a hit only in `assistant_text`); `snippet()` markers present around the
+  match; Chinese query (`飞机`) matches Chinese `user_text` via trigram; 2-char query routes
+  to the fallback.
+- **FTS5 + snippet(-1) availability (plan step 0):** a test that creates the virtual table
+  and runs `snippet(..., -1, ...)` — fails loudly if the driver lacks FTS5 or `-1` doesn't
+  auto-select the matching column.
 - **TUI:** no automated Bubble Tea tests (consistent with the current codebase). The attach
   path is already covered by existing integration tests since we reuse `attachMsg`. Manual
   verification of the spotlight rendering + mouse.
@@ -211,7 +251,9 @@ High-value logic is in `internal/searchindex` (pure-ish, DB-backed) and gets rea
 ## 8. File / unit layout
 
 - `internal/searchindex/db.go` — open/migrate the DB (WAL, schema), path via `store.JarvisHome()`.
-- `internal/searchindex/extract.go` — streaming JSONL → `(title, body)` extraction; pure, well-tested.
+- `internal/searchindex/extract.go` — streaming JSONL → buckets (`initial_prompt`, `user_text`,
+  `assistant_text`, `metadata`) with the denoising rules (`isSyntheticUserText`,
+  `detectToolNoise`, truncation); pure, the most heavily tested unit.
 - `internal/searchindex/sync.go` — `Sync()` incremental indexing.
 - `internal/searchindex/search.go` — `Search()`, query escaping, bm25/snippet, result resolution.
 - `internal/tui/dashboard.go` — search-mode branch delegates to searchindex; short-query fallback.
