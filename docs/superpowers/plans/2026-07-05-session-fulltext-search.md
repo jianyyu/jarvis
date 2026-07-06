@@ -1081,7 +1081,7 @@ func (i *Index) Search(query string) ([]Result, error) {
 
 	rows, err := i.db.Query(
 		`SELECT f.jarvis_id, m.ai_title,
-		        snippet(sessions_fts, -1, ?, ?, '…', 12)
+		        snippet(sessions_fts, -1, ?, ?, '…', 64)
 		 FROM sessions_fts f
 		 JOIN index_meta m ON m.rowid_ref = f.rowid
 		 WHERE sessions_fts MATCH ?
