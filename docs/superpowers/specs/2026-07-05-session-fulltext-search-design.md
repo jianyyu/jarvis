@@ -122,8 +122,9 @@ adapted from a proven Claude-transcript indexer):
 - **`firstPrompt`** — the first *real* human `user` message (post-synthetic-filter), truncated
   to ~200 chars → `initial_prompt` column.
 - **user bucket** — remaining real user messages → `user_text`.
-- **`detectToolNoise`** — skip assistant filler: very short (<50 chars) or pure narration like
-  `"Let me read…"`, `"I'll check…"`, `[Tool: …]`. These don't enter `assistant_text`.
+- **`detectToolNoise`** — skip assistant filler: very short (<50 runes) or containing a
+  `[Tool: …]` marker. These don't enter `assistant_text`. (Prefix-based narration filtering
+  was considered and rejected — long "Let me…" replies usually carry real content.)
 - **assistant truncation** — for a kept reply >800 chars, store `first 500 + "…" + last 200`
   (not the whole thing) so one long reply can't dominate the index.
 - **`<5` char** content is dropped outright.
@@ -153,7 +154,7 @@ type Result struct {
 One query:
 ```sql
 SELECT jarvis_id, name,
-       snippet(sessions_fts, -1, '\x02', '\x03', '…', 12) AS snip
+       snippet(sessions_fts, -1, '\x02', '\x03', '…', 64) AS snip
 FROM sessions_fts
 WHERE sessions_fts MATCH ?
 ORDER BY bm25(sessions_fts, 0.0, 12.0, 8.0, 2.0, 1.0, 3.0)

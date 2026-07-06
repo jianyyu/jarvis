@@ -42,3 +42,6 @@ var (
 	inputStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("205"))
 )
+
+// snippetHighlightStyle colours the matched term inside a search snippet.
+var snippetHighlightStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))

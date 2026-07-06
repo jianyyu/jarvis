@@ -21,6 +21,7 @@ import (
 
 	"jarvis/internal/config"
 	"jarvis/internal/model"
+	"jarvis/internal/searchindex"
 	"jarvis/internal/session"
 	"jarvis/internal/store"
 
@@ -45,6 +46,7 @@ const (
 type refreshMsg struct{ items []ListItem } // new item list from disk
 type statusMsgClear struct{}               // clear transient status text
 type attachMsg struct{ sessionID string }  // signal to exit TUI and attach
+type indexSyncedMsg struct{}               // full-text index background sync completed
 
 // ── Dashboard model ─────────────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ type Dashboard struct {
 	height int // terminal height (updated on WindowSizeMsg)
 	cfg    *config.Config
 	mgr    *session.Manager
+	idx    *searchindex.Index // full-text search index (nil if unavailable)
 
 	// Folder expand state — persists across refreshes and restarts.
 	expandState map[string]bool // folder ID → expanded?
@@ -76,6 +79,9 @@ type Dashboard struct {
 	cmdCallback func(string) tea.Cmd // called when the user presses Enter
 
 	// Transient status message shown at the bottom.
+	// NOTE: currently never set. If wired up, it renders extra lines that
+	// maxVisibleItems' search-mode line budget does not account for — extend
+	// that budget before showing it while search results are active.
 	statusMsg string
 	err       error
 
@@ -94,7 +100,7 @@ type Dashboard struct {
 // from disk and running session recovery.
 func NewDashboard(cfg *config.Config) Dashboard {
 	si := textinput.New()
-	si.Placeholder = "search..."
+	si.Placeholder = "search names + content..."
 	si.CharLimit = 100
 
 	ci := textinput.New()
@@ -102,6 +108,11 @@ func NewDashboard(cfg *config.Config) Dashboard {
 
 	// Mark dead sidecars as suspended before we display anything.
 	session.RecoverAllSessions()
+
+	idx, err := searchindex.Open(searchindex.DefaultPath())
+	if err != nil {
+		idx = nil
+	}
 
 	expandState := map[string]bool{"__done__": false}
 	cursor := 0
@@ -121,6 +132,7 @@ func NewDashboard(cfg *config.Config) Dashboard {
 	return Dashboard{
 		cfg:             cfg,
 		mgr:             session.NewManager(cfg),
+		idx:             idx,
 		expandState:     expandState,
 		cursor:          cursor,
 		scrollOffset:    scrollOffset,
@@ -188,12 +200,25 @@ func loadState() *dashboardState {
 // data load.  The dashboard does not auto-refresh — users press ctrl+r to
 // re-read from disk, and user actions that change state refresh themselves.
 func (d Dashboard) Init() tea.Cmd {
-	return d.refreshItems()
+	return tea.Batch(d.refreshItems(), d.syncIndex())
 }
 
 func (d Dashboard) refreshItems() tea.Cmd {
 	return func() tea.Msg {
 		return refreshMsg{items: buildItemList(d.mgr)}
+	}
+}
+
+// syncIndex brings the full-text search index up to date in the background.
+// A completed sync means later Search calls may return improved results;
+// filteredItems() re-runs the query on every render, so no state update is
+// needed here beyond letting Bubble Tea know the command finished.
+func (d Dashboard) syncIndex() tea.Cmd {
+	return func() tea.Msg {
+		if d.idx != nil {
+			_, _ = d.idx.Sync()
+		}
+		return indexSyncedMsg{}
 	}
 }
 
@@ -258,6 +283,9 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case attachMsg:
 		d.attachSessionID = msg.sessionID
 		return d, tea.Quit
+
+	case indexSyncedMsg:
+		return d, nil
 	}
 
 	return d, nil
@@ -401,7 +429,9 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "ctrl+r":
-		return d, d.refreshItems()
+		// Also re-sync the search index so newly-grown transcripts become
+		// searchable without restarting.
+		return d, tea.Batch(d.refreshItems(), d.syncIndex())
 	}
 
 	return d, nil
@@ -409,6 +439,18 @@ func (d Dashboard) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (d Dashboard) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "up":
+		if d.cursor > 0 {
+			d.cursor--
+			d.adjustScroll()
+		}
+		return d, nil
+	case "down":
+		if d.cursor < len(d.filteredItems())-1 {
+			d.cursor++
+			d.adjustScroll()
+		}
+		return d, nil
 	case "esc":
 		d.mode = ModeDashboard
 		d.searchQuery = ""
@@ -416,6 +458,11 @@ func (d Dashboard) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return d, d.refreshItems()
 	case "enter":
 		d.searchQuery = d.searchInput.Value()
+		if item := d.selectedItem(); item != nil && item.IsSession() && item.Status != "archived" {
+			d.SaveState()
+			sessionID := item.ID
+			return d, func() tea.Msg { return attachMsg{sessionID: sessionID} }
+		}
 		d.mode = ModeDashboard
 		return d, d.refreshItems()
 	}
@@ -501,7 +548,7 @@ func (d *Dashboard) toggleFolder(id string) {
 	d.expandState[id] = !current
 }
 
-// viewportHeight returns the number of item rows that fit on screen.
+// viewportHeight returns the number of screen lines available for item rows.
 func (d Dashboard) viewportHeight() int {
 	maxRows := d.height - 4 // reserve header (2 lines) + footer (2 lines)
 	if maxRows < 5 {
@@ -510,9 +557,24 @@ func (d Dashboard) viewportHeight() int {
 	return maxRows
 }
 
+// maxVisibleItems returns how many list items fit in the viewport. When FTS
+// results are showing, each item takes 2 lines (row + snippet) and the footer
+// gains a 2-line help hint, so fewer items fit. Both the View render window
+// and adjustScroll use this so rendering and scrolling always agree.
+func (d Dashboard) maxVisibleItems() int {
+	rows := d.viewportHeight()
+	if d.searchResultsActive() {
+		rows = (rows - 2) / 2 // -2: search-mode help hint below the input
+		if rows < 1 {
+			rows = 1
+		}
+	}
+	return rows
+}
+
 // adjustScroll ensures the cursor stays within the visible viewport.
 func (d *Dashboard) adjustScroll() {
-	maxRows := d.viewportHeight()
+	maxRows := d.maxVisibleItems()
 	if d.cursor < d.scrollOffset {
 		d.scrollOffset = d.cursor
 	}
@@ -537,6 +599,13 @@ func (d Dashboard) isExpanded(id string) bool {
 //   - Otherwise: items respecting folder expand/collapse state
 func (d Dashboard) filteredItems() []ListItem {
 	if d.searchQuery != "" {
+		// Full-text search for queries long enough for the trigram tokenizer.
+		// No fallthrough on empty/error results: an honest "no results" beats
+		// silently switching to name-substring semantics mid-query.
+		if d.fullTextEligible() {
+			return d.fullTextItems()
+		}
+		// Name substring path: short queries or no index.
 		query := strings.ToLower(d.searchQuery)
 		var result []ListItem
 		for _, item := range d.items {
