@@ -45,13 +45,9 @@ func buildItemList(mgr *session.Manager) []ListItem {
 	}
 
 	// ── Walk top-level folders: separate active from done ──
-	var doneItems []ListItem
+	var doneGroups []itemGroup
 	usedSessions := make(map[string]bool) // track sessions claimed by a folder
 
-	type itemGroup struct {
-		createdAt time.Time
-		items     []ListItem
-	}
 	var activeGroups []itemGroup
 	var doneFolders []*model.Folder
 
@@ -80,7 +76,10 @@ func buildItemList(mgr *session.Manager) []ListItem {
 			continue
 		}
 		if s.Status == model.StatusDone {
-			doneItems = append(doneItems, buildSessionItem(s, 0, mgr))
+			doneGroups = append(doneGroups, itemGroup{
+				createdAt: s.CreatedAt,
+				items:     []ListItem{buildSessionItem(s, 0, mgr)},
+			})
 			usedSessions[s.ID] = true
 			continue
 		}
@@ -103,14 +102,22 @@ func buildItemList(mgr *session.Manager) []ListItem {
 		allItems = append(allItems, g.items...)
 	}
 
-	// Done folders and their children.
+	// Done folders and their children — each subtree is one group so nested
+	// children stay contiguous under their folder header after sorting.
 	for _, f := range doneFolders {
 		folderItems := buildFolderItems(f, 1, sessionMap, folderMap, mgr, usedSessions)
-		doneItems = append(doneItems, folderItems...)
+		doneGroups = append(doneGroups, itemGroup{createdAt: folderItems[0].CreatedAt, items: folderItems})
 	}
 
-	// Sort done items so the newest-completed appear first within Done.
-	sortItemsByCreatedAt(doneItems)
+	// Sort done groups so the newest-completed appear first within Done.
+	sort.SliceStable(doneGroups, func(i, j int) bool {
+		return doneGroups[i].createdAt.After(doneGroups[j].createdAt)
+	})
+
+	var doneItems []ListItem
+	for _, g := range doneGroups {
+		doneItems = append(doneItems, g.items...)
+	}
 
 	// Virtual "Done" folder at the bottom.
 	if len(doneItems) > 0 {
@@ -163,7 +170,11 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 		TotalCount: totalCount,
 	}}
 
-	var activeChildren []ListItem
+	// Build each child as a group: a session is a single-item group, a nested
+	// folder is its whole flattened subtree. Grouping keeps every subtree
+	// contiguous so sorting by CreatedAt can't strand a nested child among its
+	// parent's siblings (a child would then render above its own folder header).
+	var childGroups []itemGroup
 	for _, child := range f.Children {
 		switch child.Type {
 		case "session":
@@ -175,7 +186,10 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 				// Skip — buildItemList collects this into the global Done section.
 				continue
 			}
-			activeChildren = append(activeChildren, buildSessionItem(s, depth+1, mgr))
+			childGroups = append(childGroups, itemGroup{
+				createdAt: s.CreatedAt,
+				items:     []ListItem{buildSessionItem(s, depth+1, mgr)},
+			})
 			used[s.ID] = true
 
 		case "folder":
@@ -183,12 +197,17 @@ func buildFolderItems(f *model.Folder, depth int, sessionMap map[string]*model.S
 			if !ok || cf.Status == "archived" {
 				continue
 			}
-			activeChildren = append(activeChildren, buildFolderItems(cf, depth+1, sessionMap, folderMap, mgr, used)...)
+			sub := buildFolderItems(cf, depth+1, sessionMap, folderMap, mgr, used)
+			childGroups = append(childGroups, itemGroup{createdAt: sub[0].CreatedAt, items: sub})
 		}
 	}
 
-	sortItemsByCreatedAt(activeChildren)
-	items = append(items, activeChildren...)
+	sort.SliceStable(childGroups, func(i, j int) bool {
+		return childGroups[i].createdAt.After(childGroups[j].createdAt)
+	})
+	for _, g := range childGroups {
+		items = append(items, g.items...)
+	}
 
 	return items
 }
@@ -230,9 +249,10 @@ func buildSessionItem(s *model.Session, depth int, mgr *session.Manager) ListIte
 	}
 }
 
-// sortItemsByCreatedAt sorts items with most-recently-created first.
-func sortItemsByCreatedAt(items []ListItem) {
-	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
+// itemGroup keeps a subtree (a folder header plus everything nested beneath
+// it, or a single session) together so it can be sorted as one unit. Sorting
+// groups rather than raw items preserves parent/child contiguity and depth.
+type itemGroup struct {
+	createdAt time.Time
+	items     []ListItem
 }
