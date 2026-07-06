@@ -17,7 +17,7 @@ func (d Dashboard) fullTextEligible() bool {
 
 // searchResultsActive reports whether the visible list is 2-line FTS results
 // (row + snippet). Every piece of layout math that depends on row height —
-// the render window, adjustScroll, and mouse row mapping — must use this one
+// the render window and adjustScroll — must use this one
 // predicate so they can never disagree.
 func (d Dashboard) searchResultsActive() bool {
 	return d.mode == ModeSearch && d.fullTextEligible()

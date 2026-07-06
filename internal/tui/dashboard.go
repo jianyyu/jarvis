@@ -286,31 +286,6 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case indexSyncedMsg:
 		return d, nil
-
-	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// Rows start after the 2-line header (title + blank). When FTS
-			// results are showing, each result renders as 2 lines (row +
-			// snippet), so halve the offset to map a screen row back to a
-			// result index.
-			row := msg.Y - 2
-			if row < 0 {
-				return d, nil // click landed on the header
-			}
-			if d.searchResultsActive() {
-				row /= 2
-			}
-			if row >= d.maxVisibleItems() {
-				return d, nil // click landed below the rendered list (footer)
-			}
-			row += d.scrollOffset
-			visible := d.filteredItems()
-			if row < len(visible) {
-				d.cursor = row
-				d.adjustScroll()
-			}
-		}
-		return d, nil
 	}
 
 	return d, nil
