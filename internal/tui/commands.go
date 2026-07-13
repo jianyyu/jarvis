@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"jarvis/internal/autorename"
 	"jarvis/internal/model"
 	"jarvis/internal/protocol"
 	"jarvis/internal/session"
@@ -55,7 +56,7 @@ func (d Dashboard) createChat(parentID string) tea.Cmd {
 		if cwd == "" {
 			cwd = "."
 		}
-		sess, err := d.mgr.Spawn("(untitled chat)", cwd, []string{"claude"})
+		sess, err := d.mgr.Spawn(autorename.UntitledName, cwd, []string{"claude"})
 		if err != nil {
 			return refreshMsg{items: buildItemList(d.mgr)}
 		}
