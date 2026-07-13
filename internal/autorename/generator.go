@@ -44,6 +44,8 @@ func (g ClaudeGenerator) Title(sess *model.Session) (string, error) {
 
 	out, err := cmd.Output()
 	if err != nil {
+		// No parseable output means no fork session_id — if claude created a
+		// forked transcript before failing, it can't be located for cleanup.
 		return "", err
 	}
 

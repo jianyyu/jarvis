@@ -180,7 +180,6 @@ func TestRunDoesNotClobberManualRenameDuringGeneration(t *testing.T) {
 type blockingGen struct {
 	entered chan struct{}
 	release chan struct{}
-	titles  []string
 }
 
 func (g *blockingGen) Title(sess *model.Session) (string, error) {
