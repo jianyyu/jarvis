@@ -174,3 +174,53 @@ func TestRunDoesNotClobberManualRenameDuringGeneration(t *testing.T) {
 		t.Error("notify must not fire when rename was skipped")
 	}
 }
+
+// blockingGen blocks inside Title until released, so a test can hold one
+// Run in flight while starting another.
+type blockingGen struct {
+	entered chan struct{}
+	release chan struct{}
+	titles  []string
+}
+
+func (g *blockingGen) Title(sess *model.Session) (string, error) {
+	g.entered <- struct{}{}
+	<-g.release
+	return "Blocked Title", nil
+}
+
+func TestRunIsSingleFlight(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("JARVIS_HOME", filepath.Join(home, ".jarvis"))
+	launchDir := t.TempDir()
+
+	if err := store.SaveSession(&model.Session{ID: "a", Name: UntitledName, Status: model.StatusActive,
+		LaunchDir: launchDir, ClaudeSessionID: "csid-a"}); err != nil {
+		t.Fatal(err)
+	}
+	writeTranscript(t, home, launchDir, "csid-a")
+
+	gen := &blockingGen{entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		Run(gen, nil)
+		close(done)
+	}()
+	<-gen.entered // first Run is now mid-generation
+
+	// Second Run must return immediately without invoking its generator.
+	second := &stubGen{title: "Second Title"}
+	Run(second, nil)
+	if len(second.calls) != 0 {
+		t.Errorf("second Run called generator %v; want no calls while another Run is in flight", second.calls)
+	}
+
+	close(gen.release)
+	<-done
+
+	got, _ := store.GetSession("a")
+	if got.Name != "Blocked Title" {
+		t.Errorf("name = %q, want first Run's title", got.Name)
+	}
+}

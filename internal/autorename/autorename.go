@@ -6,6 +6,7 @@ package autorename
 
 import (
 	"os"
+	"sync/atomic"
 
 	"jarvis/internal/model"
 	"jarvis/internal/searchindex"
@@ -15,6 +16,9 @@ import (
 
 // UntitledName is the placeholder name given to `jarvis chat` sessions.
 const UntitledName = "(untitled chat)"
+
+// runInFlight makes Run single-flight per process (see Run).
+var runInFlight atomic.Bool
 
 // FindCandidates returns the sessions eligible for auto-rename: still
 // untitled, not finished, and with a known Claude session to read context
@@ -59,6 +63,14 @@ func hasRealUserMessage(sess *model.Session) bool {
 // enhancement and must never surface errors into the TUI.
 // notify (optional) fires after each successful rename.
 func Run(gen Generator, notify func(sessionID, newName string)) {
+	// The TUI re-dispatches Run on every dashboard (re)entry; a scan can take
+	// minutes, so overlapping calls would double-invoke claude for the same
+	// sessions. Only one scan runs per process; extras return immediately.
+	if !runInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	defer runInFlight.Store(false)
+
 	sessions, err := store.ListSessions(&store.SessionFilter{
 		StatusIn: []model.SessionStatus{model.StatusActive, model.StatusSuspended},
 	})
