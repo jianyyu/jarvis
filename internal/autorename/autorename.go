@@ -73,6 +73,11 @@ func Run(gen Generator, notify func(sessionID, newName string)) {
 		if err != nil {
 			continue
 		}
+		// Title generation can take minutes; if the user manually renamed
+		// the session meanwhile, their choice wins.
+		if cur, err := store.GetSession(sess.ID); err != nil || cur.Name != UntitledName {
+			continue
+		}
 		if _, err := store.RenameSession(sess.ID, title); err != nil {
 			continue
 		}

@@ -137,3 +137,40 @@ func TestRunSkipsOnGeneratorError(t *testing.T) {
 		t.Error("notify must not fire on failure")
 	}
 }
+
+// renamingGen simulates the user manually renaming the session while the
+// slow title generation is in flight.
+type renamingGen struct {
+	title string
+}
+
+func (g *renamingGen) Title(sess *model.Session) (string, error) {
+	if _, err := store.RenameSession(sess.ID, "User Chose This"); err != nil {
+		return "", err
+	}
+	return g.title, nil
+}
+
+func TestRunDoesNotClobberManualRenameDuringGeneration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("JARVIS_HOME", filepath.Join(home, ".jarvis"))
+	launchDir := t.TempDir()
+
+	if err := store.SaveSession(&model.Session{ID: "a", Name: UntitledName, Status: model.StatusActive,
+		LaunchDir: launchDir, ClaudeSessionID: "csid-a"}); err != nil {
+		t.Fatal(err)
+	}
+	writeTranscript(t, home, launchDir, "csid-a")
+
+	notifyCalled := false
+	Run(&renamingGen{title: "Auto Title"}, func(id, name string) { notifyCalled = true })
+
+	got, _ := store.GetSession("a")
+	if got.Name != "User Chose This" {
+		t.Errorf("name = %q, want manual rename preserved", got.Name)
+	}
+	if notifyCalled {
+		t.Error("notify must not fire when rename was skipped")
+	}
+}
