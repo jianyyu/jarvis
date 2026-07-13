@@ -103,12 +103,7 @@ func (d Dashboard) createFolder(name string, parentID string) tea.Cmd {
 // renameSession changes a session's display name.
 func (d Dashboard) renameSession(sessionID, name string) tea.Cmd {
 	return func() tea.Msg {
-		s, err := store.GetSession(sessionID)
-		if err == nil {
-			s.Name = name
-			s.UpdatedAt = time.Now()
-			store.SaveSession(s)
-		}
+		_, _ = store.RenameSession(sessionID, name)
 		return refreshMsg{items: buildItemList(d.mgr)}
 	}
 }
