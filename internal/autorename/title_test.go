@@ -11,6 +11,8 @@ func TestSanitizeTitle(t *testing.T) {
 		{"\"Fix Login Bug\"", "Fix Login Bug"},
 		{"'Fix   Login\tBug'", "Fix Login Bug"},
 		{"Fix Login Bug\nExtra explanation line", "Fix Login Bug"},
+		{"\"Fix Login Bug\"  \nExtra explanation line", "Fix Login Bug"}, // trailing spaces before newline
+		{"\"\"\"", ""}, // only quotes
 		{"", ""},
 		{"   \n  ", ""},
 		// 70 x's: capped at 60 runes

@@ -16,6 +16,7 @@ func SanitizeTitle(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
+	s = strings.TrimSpace(s)
 	s = strings.Trim(s, "\"'`“”‘’")
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > maxTitleRunes {
