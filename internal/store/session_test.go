@@ -157,3 +157,45 @@ func TestDeleteSession(t *testing.T) {
 		t.Error("session should be deleted")
 	}
 }
+
+func TestRenameSession(t *testing.T) {
+	t.Setenv("JARVIS_HOME", t.TempDir())
+
+	before := time.Now().Add(-time.Hour)
+	sess := &model.Session{
+		ID:        "sess-1",
+		Name:      "(untitled chat)",
+		Status:    model.StatusActive,
+		UpdatedAt: before,
+	}
+	if err := SaveSession(sess); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	renamed, err := RenameSession("sess-1", "Fix Login Bug")
+	if err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+	if renamed.Name != "Fix Login Bug" {
+		t.Errorf("returned name = %q, want %q", renamed.Name, "Fix Login Bug")
+	}
+
+	got, err := GetSession("sess-1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.Name != "Fix Login Bug" {
+		t.Errorf("persisted name = %q, want %q", got.Name, "Fix Login Bug")
+	}
+	if !got.UpdatedAt.After(before) {
+		t.Errorf("UpdatedAt not bumped: %v", got.UpdatedAt)
+	}
+}
+
+func TestRenameSessionNotFound(t *testing.T) {
+	t.Setenv("JARVIS_HOME", t.TempDir())
+
+	if _, err := RenameSession("nope", "X"); err == nil {
+		t.Fatal("expected error for missing session, got nil")
+	}
+}

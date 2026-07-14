@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"jarvis/internal/autorename"
 	"jarvis/internal/model"
 	"jarvis/internal/protocol"
 	"jarvis/internal/session"
@@ -55,7 +56,7 @@ func (d Dashboard) createChat(parentID string) tea.Cmd {
 		if cwd == "" {
 			cwd = "."
 		}
-		sess, err := d.mgr.Spawn("(untitled chat)", cwd, []string{"claude"})
+		sess, err := d.mgr.Spawn(autorename.UntitledName, cwd, []string{"claude"})
 		if err != nil {
 			return refreshMsg{items: buildItemList(d.mgr)}
 		}
@@ -103,12 +104,7 @@ func (d Dashboard) createFolder(name string, parentID string) tea.Cmd {
 // renameSession changes a session's display name.
 func (d Dashboard) renameSession(sessionID, name string) tea.Cmd {
 	return func() tea.Msg {
-		s, err := store.GetSession(sessionID)
-		if err == nil {
-			s.Name = name
-			s.UpdatedAt = time.Now()
-			store.SaveSession(s)
-		}
+		_, _ = store.RenameSession(sessionID, name)
 		return refreshMsg{items: buildItemList(d.mgr)}
 	}
 }

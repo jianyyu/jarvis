@@ -16,9 +16,11 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"jarvis/internal/autorename"
 	"jarvis/internal/config"
 	"jarvis/internal/model"
 	"jarvis/internal/searchindex"
@@ -47,6 +49,7 @@ type refreshMsg struct{ items []ListItem } // new item list from disk
 type statusMsgClear struct{}               // clear transient status text
 type attachMsg struct{ sessionID string }  // signal to exit TUI and attach
 type indexSyncedMsg struct{}               // full-text index background sync completed
+type autoRenamedMsg struct{}               // one background auto-rename completed
 
 // ── Dashboard model ─────────────────────────────────────────────────────
 
@@ -94,6 +97,10 @@ type Dashboard struct {
 	// items may have reordered (e.g. after detaching from a session, that
 	// session's UpdatedAt bumps and it floats up).
 	pendingCursorID string
+
+	// autoRenameEvents streams one event per background auto-rename so the
+	// list refreshes as titles arrive. Closed when the scan finishes.
+	autoRenameEvents chan struct{}
 }
 
 // NewDashboard creates a fresh dashboard, loading persisted view state
@@ -130,16 +137,17 @@ func NewDashboard(cfg *config.Config) Dashboard {
 	}
 
 	return Dashboard{
-		cfg:             cfg,
-		mgr:             session.NewManager(cfg),
-		idx:             idx,
-		expandState:     expandState,
-		cursor:          cursor,
-		scrollOffset:    scrollOffset,
-		searchInput:     si,
-		cmdInput:        ci,
-		mode:            ModeDashboard,
-		pendingCursorID: pendingCursorID,
+		cfg:              cfg,
+		mgr:              session.NewManager(cfg),
+		idx:              idx,
+		expandState:      expandState,
+		cursor:           cursor,
+		scrollOffset:     scrollOffset,
+		searchInput:      si,
+		cmdInput:         ci,
+		mode:             ModeDashboard,
+		pendingCursorID:  pendingCursorID,
+		autoRenameEvents: make(chan struct{}, 16),
 	}
 }
 
@@ -197,10 +205,13 @@ func loadState() *dashboardState {
 // ── Bubble Tea lifecycle ────────────────────────────────────────────────
 
 // Init is called once when the program starts.  It kicks off the first
-// data load.  The dashboard does not auto-refresh — users press ctrl+r to
-// re-read from disk, and user actions that change state refresh themselves.
+// data load.  The dashboard does not auto-refresh on a timer — users press
+// ctrl+r to re-read from disk, and user actions that change state refresh
+// themselves. It also starts a background scan that auto-renames untitled
+// sessions; each completed rename arrives as an autoRenamedMsg and triggers
+// its own refresh so titles appear live without user action.
 func (d Dashboard) Init() tea.Cmd {
-	return tea.Batch(d.refreshItems(), d.syncIndex())
+	return tea.Batch(d.refreshItems(), d.syncIndex(), d.runAutoRename(), d.waitAutoRename())
 }
 
 func (d Dashboard) refreshItems() tea.Cmd {
@@ -219,6 +230,42 @@ func (d Dashboard) syncIndex() tea.Cmd {
 			_, _ = d.idx.Sync()
 		}
 		return indexSyncedMsg{}
+	}
+}
+
+// runAutoRename executes the whole background scan in one goroutine,
+// emitting an event per successful rename. Skipped entirely when the
+// claude CLI is unavailable.
+func (d Dashboard) runAutoRename() tea.Cmd {
+	ch := d.autoRenameEvents
+	return func() tea.Msg {
+		defer close(ch)
+		if _, err := exec.LookPath("claude"); err != nil {
+			return nil
+		}
+		autorename.Run(autorename.ClaudeGenerator{}, func(id, name string) {
+			// Non-blocking: if the TUI already quit (e.g. user attached to a
+			// session) nobody drains the channel; the scan must still finish
+			// and persist renames. A dropped event only skips one interim
+			// refresh — every event triggers a full rebuild anyway.
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		})
+		return nil
+	}
+}
+
+// waitAutoRename blocks for the next auto-rename event; Update re-arms it.
+// Returns nil once the channel closes (scan finished).
+func (d Dashboard) waitAutoRename() tea.Cmd {
+	ch := d.autoRenameEvents
+	return func() tea.Msg {
+		if _, ok := <-ch; ok {
+			return autoRenamedMsg{}
+		}
+		return nil
 	}
 }
 
@@ -286,6 +333,9 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case indexSyncedMsg:
 		return d, nil
+
+	case autoRenamedMsg:
+		return d, tea.Batch(d.refreshItems(), d.waitAutoRename())
 	}
 
 	return d, nil

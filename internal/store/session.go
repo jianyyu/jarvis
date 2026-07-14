@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"jarvis/internal/model"
 
@@ -96,4 +97,18 @@ func ListSessions(filter *SessionFilter) ([]*model.Session, error) {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 	return sessions, nil
+}
+
+// RenameSession updates a session's display name and bumps UpdatedAt.
+func RenameSession(id, name string) (*model.Session, error) {
+	s, err := GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	s.Name = name
+	s.UpdatedAt = time.Now()
+	if err := SaveSession(s); err != nil {
+		return nil, err
+	}
+	return s, nil
 }

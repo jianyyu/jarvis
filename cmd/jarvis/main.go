@@ -304,11 +304,9 @@ var renameCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("session %q not found", sessionID)
 		}
-
 		oldName := sess.Name
-		sess.Name = newName
-		sess.UpdatedAt = time.Now()
-		if err := store.SaveSession(sess); err != nil {
+
+		if _, err := store.RenameSession(sessionID, newName); err != nil {
 			return err
 		}
 		fmt.Printf("Renamed %q → %q\n", oldName, newName)
