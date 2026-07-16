@@ -205,7 +205,7 @@ func (d *GitHubDaemon) processEvent(ev GitHubEvent, repoDir string) {
 		}
 	}
 
-	sess, err := d.mgr.Spawn(ev.SessionName(), cwd, []string{"claude"})
+	sess, err := d.mgr.Spawn(ev.SessionName(), cwd)
 	if err != nil {
 		log.Printf("github-watch: spawn failed for PR #%d: %v", ev.PRNumber, err)
 		return

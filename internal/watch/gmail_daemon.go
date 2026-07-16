@@ -83,7 +83,7 @@ func (d *GmailDaemon) pollOnce(ctx context.Context) {
 	}
 
 	name := fmt.Sprintf("Gmail %s", time.Now().Format("Jan 2 15:04"))
-	sess, err := d.mgr.Spawn(name, cwd, []string{"claude"})
+	sess, err := d.mgr.Spawn(name, cwd)
 	if err != nil {
 		log.Printf("gmail-watch: spawn failed: %v", err)
 		return

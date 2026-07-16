@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"jarvis/internal/agent"
 	"jarvis/internal/config"
 	"jarvis/internal/model"
 	"jarvis/internal/sidecar"
@@ -22,10 +23,13 @@ import (
 // Manager manages session lifecycle: spawn, attach, detach, resume.
 type Manager struct {
 	Config *config.Config
+	// Agent is the coding-agent CLI this process drives, resolved from the
+	// invoked binary name. All sessions this Manager spawns or resumes use it.
+	Agent agent.Agent
 }
 
 func NewManager(cfg *config.Config) *Manager {
-	return &Manager{Config: cfg}
+	return &Manager{Config: cfg, Agent: agent.Current()}
 }
 
 // findSidecarBinary locates the jarvis-sidecar binary.
@@ -46,8 +50,9 @@ func findSidecarBinary() (string, error) {
 	return path, nil
 }
 
-// Spawn creates a new session and launches a sidecar daemon.
-func (m *Manager) Spawn(name string, cwd string, claudeArgs []string) (*model.Session, error) {
+// Spawn creates a new session and launches a sidecar daemon running this
+// Manager's agent CLI (claude or isaac).
+func (m *Manager) Spawn(name string, cwd string) (*model.Session, error) {
 	// Resolve to absolute path
 	if !filepath.IsAbs(cwd) {
 		abs, err := filepath.Abs(cwd)
@@ -71,8 +76,8 @@ func (m *Manager) Spawn(name string, cwd string, claudeArgs []string) (*model.Se
 		return nil, fmt.Errorf("save session: %w", err)
 	}
 
-	// Build the claude command string
-	claudeCmd := strings.Join(claudeArgs, " ")
+	// Build the agent command string (claude or isaac).
+	claudeCmd := m.Agent.Exec
 
 	if err := m.spawnSidecar(sess, claudeCmd); err != nil {
 		store.DeleteSession(sess.ID)
@@ -227,12 +232,12 @@ func (m *Manager) Resume(sess *model.Session) error {
 	}
 
 	if claudeSessionID != "" {
-		claudeArgs = []string{"claude", "--resume", claudeSessionID}
+		claudeArgs = []string{m.Agent.Exec, "--resume", claudeSessionID}
 	} else {
 		// Can't resume — start fresh. Clear the stale ID so it isn't
 		// persisted back to disk.
 		sess.ClaudeSessionID = ""
-		claudeArgs = []string{"claude"}
+		claudeArgs = []string{m.Agent.Exec}
 	}
 
 	// LaunchDir vs worktree: Claude must start in LaunchDir for JSONL; user edits in workspaceDir.

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"jarvis/internal/agent"
 	"jarvis/internal/autorename"
 	"jarvis/internal/config"
 	"jarvis/internal/model"
@@ -235,15 +236,16 @@ func (d Dashboard) syncIndex() tea.Cmd {
 
 // runAutoRename executes the whole background scan in one goroutine,
 // emitting an event per successful rename. Skipped entirely when the
-// claude CLI is unavailable.
+// agent CLI is unavailable.
 func (d Dashboard) runAutoRename() tea.Cmd {
 	ch := d.autoRenameEvents
+	ag := agent.Current()
 	return func() tea.Msg {
 		defer close(ch)
-		if _, err := exec.LookPath("claude"); err != nil {
+		if _, err := exec.LookPath(ag.Exec); err != nil {
 			return nil
 		}
-		autorename.Run(autorename.ClaudeGenerator{}, func(id, name string) {
+		autorename.Run(autorename.ClaudeGenerator{Exec: ag.Exec}, func(id, name string) {
 			// Non-blocking: if the TUI already quit (e.g. user attached to a
 			// session) nobody drains the channel; the scan must still finish
 			// and persist renames. A dropped event only skips one interim

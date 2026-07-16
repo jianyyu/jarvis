@@ -79,10 +79,8 @@ var newCmd = &cobra.Command{
 
 		mgr := session.NewManager(cfg)
 
-		claudeArgs := []string{"claude"}
-
 		fmt.Printf("Creating session %q...\n", name)
-		sess, err := mgr.Spawn(name, cwd, claudeArgs)
+		sess, err := mgr.Spawn(name, cwd)
 		if err != nil {
 			return err
 		}
@@ -107,10 +105,9 @@ var chatCmd = &cobra.Command{
 		}
 
 		mgr := session.NewManager(cfg)
-		claudeArgs := []string{"claude"}
 
 		fmt.Println("Creating chat session...")
-		sess, err := mgr.Spawn("(untitled chat)", cwd, claudeArgs)
+		sess, err := mgr.Spawn("(untitled chat)", cwd)
 		if err != nil {
 			return err
 		}

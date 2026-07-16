@@ -16,4 +16,8 @@ clean:
 	rm -f $(BINARY) $(SIDECAR)
 
 install: build
+	# Unlink first: running sessions hold the old inode, so removing the
+	# directory entry avoids "text file busy" while leaving them untouched.
+	rm -f ~/.local/bin/$(BINARY) ~/.local/bin/$(SIDECAR)
 	cp $(BINARY) $(SIDECAR) ~/.local/bin/
+	ln -sf $(BINARY) ~/.local/bin/ijarvis
