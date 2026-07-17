@@ -20,11 +20,16 @@ type Generator interface {
 }
 
 // ClaudeGenerator infers a title by resuming the session's full context in
-// a one-shot headless claude call. --fork-session keeps the rename exchange
-// out of the original transcript; the forked JSONL is deleted afterwards.
-// The headless call is granted no tools — it can only print text.
+// a one-shot headless call. --fork-session keeps the rename exchange out of
+// the original transcript; the forked JSONL is deleted afterwards. The
+// headless call is granted no tools — it can only print text.
+//
+// Exec is the agent CLI to invoke (claude or isaac); empty defaults to
+// "claude". Isaac wraps Claude Code and honors the same -p/--resume/
+// --fork-session flags, so the same call works for both.
 type ClaudeGenerator struct {
 	Timeout time.Duration
+	Exec    string
 }
 
 func (g ClaudeGenerator) Title(sess *model.Session) (string, error) {
@@ -35,7 +40,11 @@ func (g ClaudeGenerator) Title(sess *model.Session) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", "-p",
+	exe := g.Exec
+	if exe == "" {
+		exe = "claude"
+	}
+	cmd := exec.CommandContext(ctx, exe, "-p",
 		"--resume", sess.ClaudeSessionID,
 		"--fork-session",
 		"--output-format", "json",

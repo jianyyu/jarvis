@@ -125,7 +125,7 @@ func (d *Daemon) pollOnce(ctx context.Context) {
 		}
 
 		// Spawn a plain claude session.
-		sess, err := d.mgr.Spawn(ev.SessionName(), cwd, []string{"claude"})
+		sess, err := d.mgr.Spawn(ev.SessionName(), cwd)
 		if err != nil {
 			log.Printf("watch: spawn failed for %s: %v", key, err)
 			continue

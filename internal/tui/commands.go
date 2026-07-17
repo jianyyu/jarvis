@@ -29,7 +29,7 @@ func (d Dashboard) createSession(name string, parentID string) tea.Cmd {
 		if cwd == "" {
 			cwd = "."
 		}
-		sess, err := d.mgr.Spawn(name, cwd, []string{"claude"})
+		sess, err := d.mgr.Spawn(name, cwd)
 		if err != nil {
 			return refreshMsg{items: buildItemList(d.mgr)}
 		}
@@ -56,7 +56,7 @@ func (d Dashboard) createChat(parentID string) tea.Cmd {
 		if cwd == "" {
 			cwd = "."
 		}
-		sess, err := d.mgr.Spawn(autorename.UntitledName, cwd, []string{"claude"})
+		sess, err := d.mgr.Spawn(autorename.UntitledName, cwd)
 		if err != nil {
 			return refreshMsg{items: buildItemList(d.mgr)}
 		}
